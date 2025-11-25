@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Emscripten
@@ -19,16 +19,13 @@ jobs:
         with:
           version: 3.1.58
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y git make binaryen
+      - name: Install tools
+        run: sudo apt-get update -y && sudo apt-get install -y git make binaryen
 
       - name: Clone v86
         run: |
           git clone --depth 1 https://github.com/copy/v86.git
-          cd v86
-          git submodule update --init --recursive
+          cd v86 && git submodule update --init --recursive
 
       - name: Download Android-x86 ISO
         run: |
@@ -36,59 +33,56 @@ jobs:
           cd v86/images
           wget -q https://osdn.net/dl/android-x86/android-x86_64-4.4-r5.iso -O android-x86.iso
 
-      - name: Build v86 to WebAssembly
+      - name: Build v86
         run: |
           cd v86
           emmake make -j$(nproc) libv86.js
 
-      - name: Optimize WASM files (safe version)
+      # This is the ONLY safe way to do WASM optimization in GitHub Actions
+      - name: Optimize WASM files
         run: |
           cd v86
-          for file in *.wasm 2>/dev/null; do
-            echo "Optimizing $file"
-            wasm-opt -O4 --strip "$file" -o "$file.tmp" && mv "$file.tmp" "$file"
-          done || true
+          bash -c 'for f in *.wasm; do [ -f "$f" ] && wasm-opt -O4 --strip "$f" -o "$f.opt" && mv "$f.opt" "$f" || true; done'
 
-      - name: Package emulator
+      - name: Package everything
         run: |
           mkdir -p dist
           cp v86/libv86.js dist/
-          cp v86/v86.wasm dist/ 2>/dev/null || cp v86/*.wasm dist/ || true
+          cp v86/*.wasm dist/ 2>/dev/null || true
           cp v86/images/android-x86.iso dist/
 
-      - name: Create index.html
+      - name: Create demo page
         run: |
           cat > dist/index.html << 'EOF'
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Android-x86 Web Emulator</title>
+  <title>Android-x86 in Browser</title>
   <style>
     body{margin:0;background:#111;color:#fff;font-family:sans-serif;text-align:center;padding:20px}
-    #frame{width:400px;height:820px;margin:30px auto;border:20px solid #222;border-radius:45px;overflow:hidden;background:#000;box-shadow:0 20px 60px rgba(0,0,0,0.8)}
+    #phone{width:400px;height:820px;margin:30px auto;border:20px solid #222;border-radius:45px;overflow:hidden;background:#000;box-shadow:0 20px 60px #0008}
     canvas{width:100%;height:100%;display:block}
     button{margin:10px;padding:15px 30px;font-size:18px;background:#0066ff;color:white;border:none;border-radius:12px;cursor:pointer}
     button:disabled{background:#444;cursor:not-allowed}
   </style>
 </head>
 <body>
-  <h1>Android-x86 in Your Browser</h1>
-  <div id="frame"><div id="screen"><canvas></canvas></div></div>
+  <h1>Android-x86 WebAssembly Emulator</h1>
+  <div id="phone"><div id="screen"><canvas></canvas></div></div>
   <button id="start">Start Android</button>
   <button id="stop" disabled>Stop</button>
-  <p>Boot takes 1–2 minutes. Please wait!</p>
+  <p>Boot takes 1–2 minutes. Be patient!</p>
 
   <script type="module">
     import {V86} from "./libv86.js";
     const emu = new V86({
       screen_container: document.getElementById("screen"),
       wasm_url: "./v86.wasm",
-      memory_size: 512 * 1024 * 1024,
-      vga_memory_size: 8 * 1024 * 1024,
+      memory_size: 512*1024*1024,
+      vga_memory_size: 8*1024*1024,
       autostart: false
     });
-
     await new Promise(r => emu.add_listener("emulator-ready", r));
 
     document.getElementById("start").onclick = () => {
@@ -96,7 +90,6 @@ jobs:
       document.getElementById("start").disabled = true;
       document.getElementById("stop").disabled = false;
     };
-
     document.getElementById("stop").onclick = () => {
       emu.stop();
       document.getElementById("start").disabled = false;
@@ -107,7 +100,7 @@ jobs:
 </html>
 EOF
 
-      - name: Upload emulator
+      - name: Upload result
         uses: actions/upload-artifact@v4
         with:
           name: android-x86-web-emulator
