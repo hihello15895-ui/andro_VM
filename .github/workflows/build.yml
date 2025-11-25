@@ -39,6 +39,9 @@ env:
   QEMU_VERSION: '8.2.0'
   ANDROID_API_LEVEL: '33'
   BUILD_TYPE: 'Release'
+  # Enable Raptor mini (Preview) for all generated clients and demos
+  RAPTOR_MINI_PREVIEW_ENABLED: 'true'
+  AI_MODEL_NAME: 'raptor-mini-preview'
 
 jobs:
   build-android-wasm:
@@ -153,8 +156,8 @@ jobs:
           
           # Create Android-specific configuration patches
           cat > android-goldfish-config.patch << 'EOF'
---- a/hw/arm/virt.c
-+++ b/hw/arm/virt.c
+PATCH:--- a/hw/arm/virt.c
+PATCH:+++ b/hw/arm/virt.c
 @@ -1236,6 +1236,15 @@ static void machvirt_init(MachineState *machine)
       */
      create_fdt(vms);
@@ -279,11 +282,27 @@ jobs:
         run: |
           cd qemu/android-output/${{matrix.target}}
           
-          cat > android-qemu-wrapper.js << 'EOF'
+          # Compute JSON boolean for package.json from env
+          if [ "${RAPTOR_MINI_PREVIEW_ENABLED}" = "true" ]; then
+            RAPTOR_ENABLED_JSON=true
+          else
+            RAPTOR_ENABLED_JSON=false
+          fi
+          
+          # Write AI model constants from workflow env (avoid GitHub expression syntax inside heredoc)
+          echo "const RAPTOR_MODEL = \"${AI_MODEL_NAME}\";" > android-qemu-wrapper.js
+          if [ "${RAPTOR_MINI_PREVIEW_ENABLED}" = "true" ]; then
+            echo "const RAPTOR_MINI_ENABLED = true;" >> android-qemu-wrapper.js
+          else
+            echo "const RAPTOR_MINI_ENABLED = false;" >> android-qemu-wrapper.js
+          fi
+          
+          cat >> android-qemu-wrapper.js << 'EOF'
 /**
  * Android QEMU WebAssembly Wrapper
  * Provides an interface for running Android apps in the browser
  */
+
 
 class AndroidQEMU {
   constructor() {
@@ -302,6 +321,8 @@ class AndroidQEMU {
       memory: '512M',
       cpu: 'cortex-a15'
     };
+    // AI model config (Raptor mini preview enabled by build flag)
+    this.aiModel = RAPTOR_MINI_ENABLED ? RAPTOR_MODEL : null;
   }
 
   async initialize(config = {}) {
@@ -577,6 +598,10 @@ EOF
   ],
   "author": "GitHub Actions",
   "license": "GPL-2.0",
+  "config": {
+    "aiModel": "${AI_MODEL_NAME}",
+    "raptorPreviewEnabled": ${RAPTOR_ENABLED_JSON}
+  },
   "engines": {
     "node": ">=14.0.0"
   },
@@ -735,6 +760,7 @@ EOF
             <h4>ℹ️ About This Demo</h4>
             <p>This demonstrates Android app emulation using QEMU compiled to WebAssembly. The emulator runs ARM/ARM64 Android apps directly in your web browser.</p>
             <p><strong>Note:</strong> This is a demonstration. Actual Android images and apps would need to be provided separately.</p>
+          <p>🧠 AI Model: <strong id="ai-model">(unknown)</strong></p>
         </div>
 
         <div class="phone-frame">
@@ -816,6 +842,7 @@ EOF
                     });
                     
                     this.isInitialized = true;
+                    document.getElementById('ai-model').textContent = this.android.aiModel || '(none)';
                     this.updateStatus('✅ Android WebAssembly emulator initialized successfully!', 'success');
                     
                     // Enable start button
