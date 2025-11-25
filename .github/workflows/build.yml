@@ -17,11 +17,11 @@ on:
       android_version:
         description: 'Android-x86 version'
         required: false
-        default: 'android-x86-4.4-r2'
+        default: 'android-x86-4.4-r5'
         type: choice
         options:
           - 'android-x86-1.6-r2'
-          - 'android-x86-4.4-r2'
+          - 'android-x86-4.4-r5'
 
 env:
   EM_VERSION: 3.1.58
@@ -34,7 +34,7 @@ env:
 
 jobs:
   build-android-wasm:
-    name: Build Android-x86 QEMU WebAssembly
+    name: Build Android-x86 v86 WebAssembly
     runs-on: ubuntu-latest
     
     strategy:
@@ -107,8 +107,8 @@ jobs:
           cd v86
           mkdir -p images
           cd images
-          # Download Android-x86 4.4-r2 ISO (stable in v86)
-          wget -q https://android-x86.org/releases/android-x86_64-4.4-r5.iso -O android-x86.iso || true  # Fallback to mirror if needed
+          # Download Android-x86 4.4-r5 ISO (stable in v86; reliable mirror)
+          wget -q https://osdn.net/projects/android-x86/downloads/65695/android-x86-4.4-r5.iso -O android-x86.iso || true
           echo "ANDROID_ISO_PATH=$PWD/android-x86.iso" >> $GITHUB_ENV
 
       - name: Build v86 for WebAssembly
@@ -383,7 +383,7 @@ EOF
           
           echo "## Android-x86 WebAssembly Build Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Target: x86 (Android-x86 4.4-r2)" >> $GITHUB_STEP_SUMMARY
+          echo "### Target: x86 (Android-x86 4.4-r5)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
           echo "#### Files generated:" >> $GITHUB_STEP_SUMMARY
@@ -509,7 +509,7 @@ EOF
         
         <div class="info">
             <h4>ℹ️ About This Demo</h4>
-            <p>This runs Android-x86 4.4-r2 using v86 emulator in WebAssembly. Boots a full Android OS in your browser!</p>
+            <p>This runs Android-x86 4.4-r5 using v86 emulator in WebAssembly. Boots a full Android OS in your browser!</p>
             <p><strong>Note:</strong> x86-based; performance is ~1-5 FPS. Unlock screen to explore. APK sideloading simulated.</p>
         </div>
 
