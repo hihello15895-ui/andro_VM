@@ -1,10 +1,9 @@
-name: Build Android-x86 WebAssembly Emulator with v86
+name: Build Android-x86 WebAssembly (v86)
 
 on:
   push:
-    branches: [ main, master, develop ]
+    branches: [ main, master ]
   pull_request:
-    branches: [ main, master, develop ]
   workflow_dispatch:
 
 jobs:
@@ -14,117 +13,56 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
-      - name: Cache Emscripten
-        uses: actions/cache@v4
-        with:
-          path: emsdk-cache
-          key: emsdk-${{ runner.os }}-3.1.58
-
-      - name: Install tools
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y git make gcc g++ wget unzip binaryen build-essential
-
-      - name: Setup Emscripten
+      - name: Set up Emscripten
         uses: mymindstorm/setup-emsdk@v14
         with:
           version: 3.1.58
-          actions-cache-folder: emsdk-cache
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y git make binaryen
 
       - name: Clone v86
-        run: |
-          git clone --depth 1 https://github.com/copy/v86.git
-          cd v86
-          git submodule update --init --recursive
+        run: git clone --depth 1 https://github.com/copy/v86.git
 
       - name: Download Android-x86 ISO
         run: |
           cd v86/images
           wget -q https://osdn.net/dl/android-x86/android-x86_64-4.4-r5.iso -O android-x86.iso
 
-      - name: Build v86
+      - name: Build v86 (WebAssembly)
         run: |
           cd v86
           emmake make -j$(nproc) libv86.js
 
-      - name: Optimize WASM files
+      - name: Optimize WASM
         run: |
           cd v86
-          find . -name "*.wasm" -type f -exec sh -c '
-            echo "Optimizing $1"
-            wasm-opt -O4 --strip "$1" -o "$1.opt" && mv "$1.opt" "$1"
-          ' _ {} \;
+          for f in *.wasm; do
+            [ -f "$f" ] && wasm-opt -O4 --strip "$f" -o "$f.opt" && mv "$f.opt" "$f"
+          done
 
-      - name: Package output
+      - name: Package files
         run: |
-          mkdir -p android-wasm/x86
-          cp v86/libv86.js android-wasm/x86/
-          cp v86/*.wasm android-wasm/x86/ 2>/dev/null || true
-          cp v86/images/android-x86.iso android-wasm/x86/
+          mkdir -p dist
+          cp v86/libv86.js dist/
+          cp v86/*.wasm dist/ 2>/dev/null || true
+          cp v86/images/android-x86.iso dist/
 
-      - name: Create wrapper
+      - name: Create wrapper + demo
         run: |
-          cat > android-wasm/x86/android-v86-wrapper.js << 'EOF'
-class AndroidV86Emulator {
-  constructor() { this.emulator = null; this.isRunning = false; }
-  async initialize() {
-    const mod = await import("./libv86.js");
-    this.emulator = new mod.V86({
-      wasm_url: "./v86.wasm",
-      memory_size: 512 * 1024 * 1024,
-      vga_memory_size: 8 * 1024 * 1024,
-      screen_container: document.getElementById("screen")?.parentNode,
-      autostart: false
-    });
-    await new Promise(r => this.emulator.add_listener("emulator-ready", r));
-  }
-  async start() {
-    if (!this.emulator) await this.initialize();
-    this.emulator.run();
-    this.isRunning = true;
-  }
-  stop() {
-    if (this.emulator) this.emulator.stop();
-    this.isRunning = false;
-  }
-}
-if (typeof window !== "undefined") window.AndroidV86Emulator = AndroidV86Emulator;
-EOF
-
-      - name: Upload WASM build
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-x86-wasm
-          path: android-wasm/x86/
-
-  demo:
-    needs: build
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Download build
-        uses: actions/download-artifact@v4
-        with:
-          name: android-x86-wasm
-          path: demo
-
-      - name: Create demo page
-        run: |
-          cat > demo/index.html << 'EOF'
+          cat > dist/index.html <<'HTML'
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Android-x86 in Browser (v86 + WASM)</title>
+  <title>Android-x86 in Browser</title>
   <style>
-    body { margin:0; background:#111; color:#fff; font-family:sans-serif; text-align:center; padding:20px; }
-    #phone { width:400px; height:820px; margin:30px auto; border:20px solid #222; border-radius:45px; background:#000; box-shadow:0 15px 50px rgba(0,0,0,0.8); overflow:hidden; }
-    canvas { width:100%; height:100%; display:block; }
-    button { margin:10px; padding:14px 28px; font-size:18px; cursor:pointer; background:#0d6efd; color:white; border:none; border-radius:12px; }
-    button:disabled { background:#555; cursor:not-allowed; }
+    body{margin:0;background:#000;color:#fff;font-family:sans-serif;text-align:center;padding:20px}
+    #phone{width:400px;height:820px;margin:30px auto;border:20px solid #222;border-radius:45px;overflow:hidden;background:#000;box-shadow:0 15px 50px rgba(0,0,0,0.8)}
+    canvas{width:100%;height:100%;display:block}
+    button{margin:10px;padding:14px 28px;font-size:18px;background:#0d6efd;color:white;border:none;border-radius:12px;cursor:pointer}
+    button:disabled{background:#555;cursor:not-allowed}
   </style>
 </head>
 <body>
@@ -132,29 +70,38 @@ EOF
   <div id="phone"><div id="screen"><canvas></canvas></div></div>
   <button id="start">Start Android</button>
   <button id="stop" disabled>Stop</button>
-  <p>Boot takes 1–2 minutes. Be patient!</p>
+  <p>Boot takes 1–2 minutes — please wait!</p>
 
   <script type="module">
-    import AndroidV86Emulator from "./android-v86-wrapper.js";
-    const emu = new AndroidV86Emulator();
+    import {V86} from "./libv86.js";
+    const emulator = new V86({
+      screen_container: document.getElementById("screen"),
+      wasm_url: "./v86.wasm",
+      memory_size: 512*1024*1024,
+      vga_memory_size: 8*1024*1024,
+      autostart: false
+    });
 
-    document.getElementById("start").onclick = async () => {
+    await new Promise(r => emulator.add_listener("emulator-ready", r));
+
+    document.getElementById("start").onclick = () => {
+      emulator.run();
       document.getElementById("start").disabled = true;
-      await emu.start();
       document.getElementById("stop").disabled = false;
     };
+
     document.getElementById("stop").onclick = () => {
-      emu.stop();
+      emulator.stop();
       document.getElementById("start").disabled = false;
       document.getElementById("stop").disabled = true;
     };
   </script>
 </body>
 </html>
-EOF
+HTML
 
-      - name: Upload demo
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: android-x86-demo
-          path: demo/
+          name: android-x86-web-emulator
+          path: dist/
