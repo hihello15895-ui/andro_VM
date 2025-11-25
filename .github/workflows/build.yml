@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Emscripten
@@ -19,7 +19,7 @@ jobs:
         with:
           version: 3.1.58
 
-      - name: Install tools
+      - name: Install dependencies
         run: |
           sudo apt-get update -y
           sudo apt-get install -y git make binaryen
@@ -32,69 +32,73 @@ jobs:
 
       - name: Download Android-x86 ISO
         run: |
+          mkdir -p v86/images
           cd v86/images
           wget -q https://osdn.net/dl/android-x86/android-x86_64-4.4-r5.iso -O android-x86.iso
 
-      - name: Build v86
+      - name: Build v86 to WebAssembly
         run: |
           cd v86
           emmake make -j$(nproc) libv86.js
 
-      - name: Optimize WASM (safe one-liner)
+      - name: Optimize WASM files (safe version)
         run: |
           cd v86
-          find . -name "*.wasm" -exec wasm-opt -O4 --strip {} -o {}.opt \; -exec mv {}.opt {} \; || true
+          for file in *.wasm 2>/dev/null; do
+            echo "Optimizing $file"
+            wasm-opt -O4 --strip "$file" -o "$file.tmp" && mv "$file.tmp" "$file"
+          done || true
 
-      - name: Create dist folder and copy files
+      - name: Package emulator
         run: |
           mkdir -p dist
           cp v86/libv86.js dist/
-          cp v86/v86.wasm dist/ 2>/dev/null || cp v86/*.wasm dist/ 2>/dev/null || true
+          cp v86/v86.wasm dist/ 2>/dev/null || cp v86/*.wasm dist/ || true
           cp v86/images/android-x86.iso dist/
 
-      - name: Create demo HTML
+      - name: Create index.html
         run: |
           cat > dist/index.html << 'EOF'
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Android-x86 in Browser</title>
+  <title>Android-x86 Web Emulator</title>
   <style>
     body{margin:0;background:#111;color:#fff;font-family:sans-serif;text-align:center;padding:20px}
-    #phone{width:400px;height:820px;margin:30px auto;border:20px solid #222;border-radius:45px;overflow:hidden;background:#000;box-shadow:0 15px 50px rgba(0,0,0,0.8)}
+    #frame{width:400px;height:820px;margin:30px auto;border:20px solid #222;border-radius:45px;overflow:hidden;background:#000;box-shadow:0 20px 60px rgba(0,0,0,0.8)}
     canvas{width:100%;height:100%;display:block}
-    button{margin:10px;padding:14px 28px;font-size:18px;background:#0d6efd;color:white;border:none;border-radius:12px;cursor:pointer}
-    button:disabled{background:#555;cursor:not-allowed}
+    button{margin:10px;padding:15px 30px;font-size:18px;background:#0066ff;color:white;border:none;border-radius:12px;cursor:pointer}
+    button:disabled{background:#444;cursor:not-allowed}
   </style>
 </head>
 <body>
-  <h1>Android-x86 WebAssembly Emulator</h1>
-  <div id="phone"><div id="screen"><canvas></canvas></div></div>
+  <h1>Android-x86 in Your Browser</h1>
+  <div id="frame"><div id="screen"><canvas></canvas></div></div>
   <button id="start">Start Android</button>
   <button id="stop" disabled>Stop</button>
-  <p>Boot takes 1–2 minutes — please wait!</p>
+  <p>Boot takes 1–2 minutes. Please wait!</p>
 
   <script type="module">
     import {V86} from "./libv86.js";
-    const emulator = new V86({
+    const emu = new V86({
       screen_container: document.getElementById("screen"),
       wasm_url: "./v86.wasm",
-      memory_size: 512*1024*1024,
-      vga_memory_size: 8*1024*1024,
+      memory_size: 512 * 1024 * 1024,
+      vga_memory_size: 8 * 1024 * 1024,
       autostart: false
     });
 
-    await new Promise(r => emulator.add_listener("emulator-ready", r));
+    await new Promise(r => emu.add_listener("emulator-ready", r));
 
     document.getElementById("start").onclick = () => {
-      emulator.run();
+      emu.run();
       document.getElementById("start").disabled = true;
       document.getElementById("stop").disabled = false;
     };
 
     document.getElementById("stop").onclick = () => {
-      emulator.stop();
+      emu.stop();
       document.getElementById("start").disabled = false;
       document.getElementById("stop").disabled = true;
     };
