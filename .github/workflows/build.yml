@@ -13,684 +13,161 @@ on:
       - '.github/workflows/build-android-wasm.yml'
       - 'android/**'
   workflow_dispatch:
-    inputs:
-      android_version:
-        description: 'Android-x86 version'
-        required: false
-        default: 'android-x86-4.4-r5'
-        type: choice
-        options:
-          - 'android-x86-1.6-r2'
-          - 'android-x86-4.4-r5'
 
 env:
   EM_VERSION: 3.1.58
   EM_CACHE_FOLDER: 'android-emsdk-cache'
-  V86_VERSION: 'main'  # Latest as of 2025; pin to tag if needed
-  BUILD_TYPE: 'Release'
-  # Enable Raptor mini (Preview) for generated clients & demos
-  RAPTOR_MINI_PREVIEW_ENABLED: 'true'
-  AI_MODEL_NAME: 'raptor-mini-preview'
+  V86_VERSION: 'main'
 
 jobs:
   build-android-wasm:
-    name: Build Android-x86 v86 WebAssembly
     runs-on: ubuntu-latest
-    
-    strategy:
-      fail-fast: false
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
-          fetch-depth: 0
 
       - name: Setup Emscripten cache
-        id: cache-emscripten
         uses: actions/cache@v4
-        continue-on-error: true
         with:
-          path: ${{env.EM_CACHE_FOLDER}}
-          key: v86-${{env.EM_VERSION}}-${{runner.os}}-emscripten
-          restore-keys: |
-            v86-${{env.EM_VERSION}}-${{runner.os}}-emscripten-
+          path: ${{ env.EM_CACHE_FOLDER }}
+          key: v86-${{ env.EM_VERSION }}-${{ runner.os }}
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            ninja-build \
-            python3-pip \
-            python3-setuptools \
-            python3-wheel \
-            python3-venv \
-            git \
-            make \
-            gcc \
-            g++ \
-            pkg-config \
-            wget \
-            curl \
-            unzip \
-            build-essential
+          sudo apt-get update -y
+          sudo apt-get install -y ninja-build git make gcc g++ wget unzip binaryen build-essential
 
-      - name: Install WebAssembly tools (wasm-opt)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y binaryen
-          wasm-opt --version || true
-
-      - name: Setup Emscripten for v86
+      - name: Setup Emscripten
         uses: mymindstorm/setup-emsdk@v14
         with:
-          version: ${{env.EM_VERSION}}
-          actions-cache-folder: ${{env.EM_CACHE_FOLDER}}
-          no-cache: ${{ steps.cache-emscripten.outputs.cache-hit != 'true' }}
-
-      - name: Verify Emscripten installation
-        run: |
-          emcc -v
-          emmake --version
+          version: ${{ env.EM_VERSION }}
+          actions-cache-folder: ${{ env.EM_CACHE_FOLDER }}
 
       - name: Clone v86
         run: |
-          if [ ! -d "v86" ]; then
-            git clone --depth 1 --branch ${{env.V86_VERSION}} https://github.com/copy/v86.git
-          fi
+          git clone --depth 1 https://github.com/copy/v86.git
           cd v86
           git submodule update --init --recursive
 
       - name: Download Android-x86 ISO
         run: |
-          cd v86
-          mkdir -p images
-          cd images
-          # Download Android-x86 4.4-r5 ISO (stable in v86; reliable mirror)
-          wget -q https://osdn.net/projects/android-x86/downloads/65695/android-x86-4.4-r5.iso -O android-x86.iso || true
-          echo "ANDROID_ISO_PATH=$PWD/android-x86.iso" >> $GITHUB_ENV
+          cd v86/images
+          wget -q https://osdn.net/dl/android-x86/android-x86_64-4.4-r5.iso -O android-x86.iso
 
-      - name: Build v86 for WebAssembly
+      - name: Build v86
         run: |
           cd v86
-          
-          # Build libv86.js and emulator assets
           emmake make -j$(nproc) libv86.js
-          
+
           # Optimize WASM
-          for wasm_file in $(find . -name "*.wasm" -type f); do
-            echo "Optimizing $wasm_file"
-            wasm-opt -O4 --vacuum --strip "$wasm_file" -o "${wasm_file}.opt"
-            mv "${wasm_file}.opt" "$wasm_file"
+          for f in *.wasm; do
+            [ -f "$f" ] && wasm-opt -O4 --strip "$f" -o "$f.opt" && mv "$f.opt" "$f"
           done
 
-      - name: Create Android-specific WebAssembly output
+      - name: Prepare output
         run: |
-          cd v86
-          
-          # Create output directory
-          mkdir -p ../android-output/x86
-          
-          # Copy built artifacts (libv86.js, v86.wasm, etc.)
-          cp libv86.js ../android-output/x86/
-          cp build/libv86.js.mem ../android-output/x86/ || true
-          cp images/android-x86.iso ../android-output/x86/ || true
-          find . -name "*.wasm" -exec cp {} ../android-output/x86/ \; || true
-          
-          # List files
-          find ../android-output/x86 -type f
+          mkdir -p android-output/x86
+          cp v86/libv86.js android-output/x86/
+          cp v86/*.wasm android-output/x86/ 2>/dev/null || true
+          cp v86/images/android-x86.iso android-output/x86/
 
-      - name: Create Android JavaScript wrapper
+      - name: Create wrapper
         run: |
-          cd v86/android-output/x86
-          
-          cat > android-v86-wrapper.js << 'EOF'
-/**
- * Android-x86 v86 WebAssembly Wrapper
- * Provides an interface for running Android-x86 in the browser using v86 emulator
- */
-
+          cat > android-output/x86/android-v86-wrapper.js << 'EOF'
 class AndroidV86Emulator {
   constructor() {
     this.emulator = null;
     this.isRunning = false;
-    this.androidCallbacks = {
-      onTouch: null,
-      onKey: null,
-      onFrame: null,
-      onLog: null
-    };
-    this.config = {
-      memorySize: 512 * 1024 * 1024,  // 512MB
-      cpuFrequency: 100,  // For playable speed
-      vgaMemorySize: 8 * 1024 * 1024,  // 8MB VGA
-      screenContainer: null,
-      // Android-x86 specific: Boot from ISO
-      bootDevice: "cdrom",
-      cdromImage: "./android-x86.iso"
-    };
   }
-
-  async initialize(config = {}) {
-    if (this.emulator) {
-      return this.emulator;
-    }
-
-    // Merge configuration
-    this.config = { ...this.config, ...config };
-
-    try {
-      // Dynamically import v86 lib
-      const v86Module = await import('./libv86.js');
-      
-      // Initialize v86 emulator
-      this.emulator = new v86Module.V86({
-        ...this.config,
-        wasm_url: "./v86.wasm",  // Adjust if needed
-        memory_size: this.config.memorySize,
-        vga_memory_size: this.config.vgaMemorySize,
-        autoboot: false,  // Manual start
-        filesystem: {},  // Add 9p or MEMFS for storage if needed
-        bypass_mainboot: true  // For custom boot
-      });
-      
-      // Set up Android-x86 boot sequence
-      this.setupAndroidBoot();
-      
-      return this.emulator;
-    } catch (error) {
-      console.error('Failed to load v86 module:', error);
-      throw error;
-    }
-  }
-
-  setupAndroidBoot() {
-    // Configure for Android-x86 ISO boot
-    if (this.emulator && this.emulator.create_hdd) {
-      // Optional: Create virtual HDD for persistence
-      this.emulator.create_hdd({ size: 8 * 1024 * 1024 * 1024 });  // 8GB
-    }
-  }
-
-  async start() {
-    if (!this.emulator) {
-      await this.initialize();
-    }
-
-    if (this.isRunning) {
-      console.warn('Android emulator already running');
-      return;
-    }
-
-    try {
-      // Start v86
-      await this.emulator.addListener("emulator-ready", () => {
-        console.log('v86 ready, booting Android-x86...');
-        // Boot from CDROM (ISO)
-        this.emulator.boot_from_cdrom();
-      });
-      
-      this.emulator.run();
-      this.isRunning = true;
-      
-      // Start frame loop for rendering
-      this.startFrameLoop();
-      
-      console.log('Android-x86 started successfully');
-    } catch (error) {
-      console.error('Failed to start Android-x86:', error);
-      this.isRunning = false;
-      throw error;
-    }
-  }
-
-  startFrameLoop() {
-    const render = () => {
-      if (!this.isRunning) return;
-      
-      // v86 handles rendering internally; callback for custom overlays
-      if (this.androidCallbacks.onFrame) {
-        this.androidCallbacks.onFrame();
-      }
-      
-      requestAnimationFrame(render);
-    };
-    
-    requestAnimationFrame(render);
-  }
-
-  stop() {
-    if (this.isRunning && this.emulator) {
-      this.emulator.stop();
-      this.isRunning = false;
-      console.log('Android-x86 stopped');
-    }
-  }
-
-  getStatus() {
-    return {
-      isRunning: this.isRunning,
-      emulator: this.emulator ? 'loaded' : 'not loaded',
-      config: this.config
-    };
-  }
-
-  // Android-specific methods (simulated for demo)
-  installApp(apkFile) {
-    console.log(`Sideloading APK: ${apkFile.name}`);
-    // In full impl: Use v86's filesystem to mount and run ADB install
-    // For demo: Log and simulate
-    if (this.androidCallbacks.onLog) {
-      this.androidCallbacks.onLog(`APK ${apkFile.name} installed via ADB`);
-    }
-  }
-
-  setCallbacks(callbacks) {
-    this.androidCallbacks = { ...this.androidCallbacks, ...callbacks };
-  }
-
-  // Input handlers (v86 integrates with canvas directly)
-  setupInput(canvas) {
-    // v86 handles keyboard/mouse; add touch for mobile
-    canvas.addEventListener('touchstart', (e) => {
-      e.preventDefault();
-      // Simulate mouse down for v86
-      const touch = e.touches[0];
-      const mouseEvent = new MouseEvent('mousedown', { clientX: touch.clientX, clientY: touch.clientY });
-      canvas.dispatchEvent(mouseEvent);
-      if (this.androidCallbacks.onTouch) {
-        this.androidCallbacks.onTouch('down', touch.clientX, touch.clientY);
-      }
+  async initialize() {
+    const mod = await import("./libv86.js");
+    this.emulator = new mod.V86({
+      wasm_url: "./v86.wasm",
+      memory_size: 512 * 1024 * 1024,
+      vga_memory_size: 8 * 1024 * 1024,
+      screen_container: document.getElementById("v86-canvas")?.parentNode,
+      autostart: false
     });
-    // Add touchmove, touchend similarly...
+    await new Promise(r => this.emulator.add_listener("emulator-ready", r));
+  }
+  async start() {
+    if (!this.emulator) await this.initialize();
+    this.emulator.boot_from_cdrom();
+    this.emulator.run();
+    this.isRunning = true;
+  }
+  stop() {
+    if (this.emulator) this.emulator.stop();
+    this.isRunning = false;
   }
 }
-
-// Export for Node.js or browser
-if (typeof module !== 'undefined' && module.exports) {
-  module.exports = AndroidV86Emulator;
-} else if (typeof window !== 'undefined') {
-  window.AndroidV86Emulator = AndroidV86Emulator;
-} else {
-  global.AndroidV86Emulator = AndroidV86Emulator;
-}
+if (typeof module !== "undefined" && module.exports) module.exports = AndroidV86Emulator;
+else if (typeof window !== "undefined") window.AndroidV86Emulator = AndroidV86Emulator;
 EOF
 
-      - name: Inject RAPTOR constants into wrapper
-        run: |
-          cd v86/android-output/x86
-          if [ "${RAPTOR_MINI_PREVIEW_ENABLED}" = "true" ]; then
-            RAPTOR_ENABLED_JSON=true
-          else
-            RAPTOR_ENABLED_JSON=false
-          fi
-          printf "const RAPTOR_MODEL=\"${AI_MODEL_NAME}\";\nconst RAPTOR_MINI_ENABLED=${RAPTOR_ENABLED_JSON};\n" > android-v86-wrapper.tmp.js
-          cat android-v86-wrapper.js >> android-v86-wrapper.tmp.js
-          mv android-v86-wrapper.tmp.js android-v86-wrapper.js
-
-      - name: Create Android package.json
-        run: |
-          cd v86/android-output/x86
-          
-          cat > package.json << EOF
-{
-  "name": "android-v86-x86-wasm",
-  "version": "1.0.0",
-  "description": "Android-x86 emulator using v86 compiled to WebAssembly",
-  "main": "android-v86-wrapper.js",
-  "type": "module",
-  "scripts": {
-    "start": "node android-v86-wrapper.js",
-    "test": "node -e \"console.log('Android v86 WASM module loaded successfully')\""
-  },
-  "keywords": [
-    "android",
-    "emulator",
-    "v86",
-    "webassembly",
-    "wasm",
-    "x86"
-  ],
-  "author": "GitHub Actions",
-  "license": "MIT",
-  "engines": {
-    "node": ">=14.0.0"
-  },
-  "files": [
-    "*.js",
-    "*.wasm",
-    "*.iso",
-    "*.data"
-  ],
-  "repository": {
-    "type": "git",
-    "url": "."
-  }
-}
-EOF
-
-      - name: Upload Android build artifacts
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: android-v86-x86-wasm
-          path: v86/android-output/x86/
-          retention-days: 30
-
-      - name: Generate Android build summary
-        run: |
-          cd v86/android-output/x86
-          
-          echo "## Android-x86 WebAssembly Build Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Target: x86 (Android-x86 4.4-r5)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          
-          echo "#### Files generated:" >> $GITHUB_STEP_SUMMARY
-          find . -type f -exec ls -lh {} \; | while read line; do
-            echo "- $line" >> $GITHUB_STEP_SUMMARY
-          done
-          
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "#### Build information:" >> $GITHUB_STEP_SUMMARY
-          echo "- v86 Version: ${{env.V86_VERSION}}" >> $GITHUB_STEP_SUMMARY
-          echo "- Emscripten Version: ${{env.EM_VERSION}}" >> $GITHUB_STEP_SUMMARY
-          echo "- Target Architecture: x86" >> $GITHUB_STEP_SUMMARY
-          echo "- Build Type: ${{env.BUILD_TYPE}}" >> $GITHUB_STEP_SUMMARY
+          name: android-v86-wasm
+          path: android-output/x86/
 
   android-demo:
-    name: Create Android Demo
     needs: build-android-wasm
     runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
 
-      - name: Download Android artifacts
+    steps:
+      - name: Download built files
         uses: actions/download-artifact@v4
         with:
-          name: android-v86-x86-wasm
-          path: android-demo
-          
-      - name: Create Android demo HTML
+          name: android-v86-wasm
+          path: demo
+
+      - name: Create demo HTML
         run: |
-          mkdir -p android-demo
-          cat > android-demo/index.html << 'EOF'
+          cat > demo/index.html << 'EOF'
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Android-x86 WebAssembly Emulator</title>
-    <style>
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 20px;
-            background: linear-gradient(135deg, #4CAF50 0%, #2196F3 100%);
-            color: #333;
-            min-height: 100vh;
-        }
-        .container {
-            background: rgba(255, 255, 255, 0.95);
-            border-radius: 15px;
-            padding: 30px;
-            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
-        }
-        .phone-frame {
-            width: 400px;
-            height: 800px;
-            border: 20px solid #333;
-            border-radius: 40px;
-            margin: 20px auto;
-            position: relative;
-            background: #000;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
-        }
-        .phone-screen {
-            width: 100%;
-            height: 100%;
-            border-radius: 20px;
-            overflow: hidden;
-            position: relative;
-        }
-        #v86-canvas {
-            width: 100%;
-            height: 100%;
-            display: block;
-            background: #000;
-        }
-        .controls {
-            text-align: center;
-            margin: 20px 0;
-        }
-        button {
-            background: linear-gradient(135deg, #4CAF50, #2196F3);
-            color: white;
-            border: none;
-            padding: 12px 24px;
-            margin: 5px;
-            border-radius: 25px;
-            cursor: pointer;
-            font-size: 16px;
-            transition: all 0.3s ease;
-        }
-        button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
-        }
-        button:disabled {
-            background: #ccc;
-            cursor: not-allowed;
-        }
-        .status {
-            background: #333;
-            color: #fff;
-            padding: 15px;
-            border-radius: 10px;
-            margin: 20px 0;
-            font-family: monospace;
-            text-align: center;
-        }
-        .info {
-            background: #e3f2fd;
-            padding: 15px;
-            border-radius: 10px;
-            margin: 20px 0;
-            border-left: 4px solid #2196F3;
-        }
-    </style>
+  <meta charset="utf-8">
+  <title>Android-x86 in Browser (v86 + WASM)</title>
+  <style>
+    body { margin:0; background:#222; font-family:sans-serif; color:white; text-align:center; padding:20px; }
+    #phone { width:400px; height:800px; margin:20px auto; border:20px solid #000; border-radius:40px; overflow:hidden; background:#000; box-shadow:0 10px 40px rgba(0,0,0,0.6); }
+    canvas { width:100%; height:100%; display:block; }
+    button { margin:10px; padding:12px 24px; font-size:16px; cursor:pointer; }
+  </style>
 </head>
 <body>
-    <div class="container">
-        <h1>📱 Android-x86 WebAssembly Emulator</h1>
-        
-        <div class="info">
-            <h4>ℹ️ About This Demo</h4>
-            <p>This runs Android-x86 4.4-r5 using v86 emulator in WebAssembly. Boots a full Android OS in your browser!</p>
-            <p><strong>Note:</strong> x86-based; performance is ~1-5 FPS. Unlock screen to explore. APK sideloading simulated.</p>
-        </div>
+  <h1>Android-x86 WebAssembly Emulator</h1>
+  <div id="phone"><div><canvas id="v86-canvas"></canvas></div></div>
+  <button id="start">Start Android</button>
+  <button id="stop" disabled>Stop</button>
+  <p>Boot takes ~1–2 minutes. Be patient!</p>
 
-        <div class="phone-frame">
-            <div class="phone-screen">
-                <canvas id="v86-canvas"></canvas>
-            </div>
-        </div>
+  <script type="module">
+    import AndroidV86Emulator from "./android-v86-wrapper.js";
+    const emu = new AndroidV86Emulator();
 
-        <div class="controls">
-            <button id="init">🔧 Initialize Emulator</button>
-            <button id="start" disabled>▶️ Start Android</button>
-            <button id="stop" disabled>⏹️ Stop Emulator</button>
-            <button id="install" disabled>📲 Install APK</button>
-        </div>
-
-        <div class="status" id="status">
-            Ready to initialize Android-x86 WebAssembly emulator...
-        </div>
-    </div>
-
-    <script type="module">
-        import AndroidV86Emulator from './android-v86-wrapper.js';
-
-        class AndroidEmulator {
-            constructor() {
-                this.android = null;
-                this.isInitialized = false;
-                this.isRunning = false;
-                this.status = document.getElementById('status');
-                this.canvas = document.getElementById('v86-canvas');
-                
-                this.setupEventListeners();
-                this.updateStatus('Ready to initialize Android-x86 WebAssembly emulator...', 'info');
-            }
-
-            setupEventListeners() {
-                document.getElementById('init').addEventListener('click', () => this.initialize());
-                document.getElementById('start').addEventListener('click', () => this.start());
-                document.getElementById('stop').addEventListener('click', () => this.stop());
-                document.getElementById('install').addEventListener('click', () => this.installApp());
-                
-                // Setup input on canvas
-                this.canvas.addEventListener('click', () => this.android?.setupInput(this.canvas));
-            }
-
-            updateStatus(message, type = 'info') {
-                this.status.textContent = message;
-                console.log(`[${type.toUpperCase()}] ${message}`);
-            }
-
-            async initialize() {
-                if (this.isInitialized) {
-                    this.updateStatus('Emulator already initialized', 'success');
-                    return;
-                }
-
-                this.updateStatus('Initializing v86 WebAssembly emulator...', 'info');
-                document.getElementById('init').disabled = true;
-
-                try {
-                    this.android = new AndroidV86Emulator();
-                    await this.android.initialize({
-                        screenContainer: this.canvas.parentNode,
-                        memorySize: 512 * 1024 * 1024,
-                        cpuFrequency: 100
-                    });
-                    
-                    // Set callbacks
-                    this.android.setCallbacks({
-                        onTouch: (type, x, y) => console.log(`Touch ${type} at (${x}, ${y})`),
-                        onFrame: () => {},  // v86 renders itself
-                        onLog: (message) => this.updateStatus(message, 'info')
-                    });
-                    
-                    this.isInitialized = true;
-                    this.updateStatus('✅ v86 emulator initialized successfully!', 'success');
-                    document.getElementById('start').disabled = false;
-                    
-                } catch (error) {
-                    this.updateStatus(`❌ Initialization failed: ${error.message}`, 'error');
-                    console.error('v86 initialization error:', error);
-                    document.getElementById('init').disabled = false;
-                }
-            }
-
-            async start() {
-                if (!this.isInitialized) {
-                    this.updateStatus('⚠️ Please initialize first', 'error');
-                    return;
-                }
-
-                if (this.isRunning) {
-                    this.updateStatus('⚠️ Emulator already running', 'error');
-                    return;
-                }
-
-                this.updateStatus('Booting Android-x86...', 'info');
-                document.getElementById('start').disabled = true;
-
-                try {
-                    await this.android.start();
-                    
-                    this.isRunning = true;
-                    this.updateStatus('🚀 Android-x86 booted! Unlock the screen to start.', 'success');
-                    
-                    document.getElementById('stop').disabled = false;
-                    document.getElementById('install').disabled = false;
-                    
-                } catch (error) {
-                    this.updateStatus(`❌ Failed to start: ${error.message}`, 'error');
-                    console.error('Start error:', error);
-                    document.getElementById('start').disabled = false;
-                }
-            }
-
-            async stop() {
-                if (!this.isRunning) {
-                    this.updateStatus('⚠️ Emulator not running', 'error');
-                    return;
-                }
-
-                this.updateStatus('Stopping emulator...', 'info');
-
-                try {
-                    this.android.stop();
-                    
-                    this.isRunning = false;
-                    this.updateStatus('⏹️ Emulator stopped', 'success');
-                    
-                    document.getElementById('start').disabled = false;
-                    document.getElementById('stop').disabled = true;
-                    document.getElementById('install').disabled = true;
-                    
-                } catch (error) {
-                    this.updateStatus(`❌ Stop failed: ${error.message}`, 'error');
-                }
-            }
-
-            async installApp() {
-                if (!this.isRunning) {
-                    this.updateStatus('⚠️ Start emulator first', 'error');
-                    return;
-                }
-
-                const input = document.createElement('input');
-                input.type = 'file';
-                input.accept = '.apk';
-                
-                input.onchange = async (e) => {
-                    const file = e.target.files[0];
-                    if (file) {
-                        this.updateStatus(`Simulating install of ${file.name}...`, 'info');
-                        
-                        try {
-                            this.android.installApp(file);
-                            this.updateStatus(`✅ ${file.name} sideloaded! Check apps drawer.`, 'success');
-                        } catch (error) {
-                            this.updateStatus(`❌ Install failed: ${error.message}`, 'error');
-                        }
-                    }
-                };
-                
-                input.click();
-            }
-        }
-
-        // Initialize on load
-        document.addEventListener('DOMContentLoaded', () => {
-            const emulator = new AndroidEmulator();
-            console.log('📱 Android-x86 v86 Emulator loaded');
-            console.log('Boot may take 1-2 minutes; be patient!');
-        });
-    </script>
+    document.getElementById("start").onclick = async () => {
+      document.getElementById("start").disabled = true;
+      await emu.start();
+      document.getElementById("stop").disabled = false;
+    };
+    document.getElementById("stop").onclick = () => {
+      emu.stop();
+      document.getElementById("start").disabled = false;
+      document.getElementById("stop").disabled = true;
+    };
+  </script>
 </body>
 </html>
 EOF
 
-      - name: Upload Android demo
+      - name: Upload demo
         uses: actions/upload-artifact@v4
         with:
-          name: android-demo
-          path: android-demo/
-          retention-days: 30
+          name: android-x86-demo
+          path: demo/
