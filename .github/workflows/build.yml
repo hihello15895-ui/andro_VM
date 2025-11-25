@@ -76,6 +76,7 @@ jobs:
       - name: Setup Android Emulator cache
         id: cache-android-emscripten
         uses: actions/cache@v4
+        continue-on-error: true
         with:
           path: ${{env.EM_CACHE_FOLDER}}
           key: android-${{env.EM_VERSION}}-${{runner.os}}-emscripten-${{matrix.target}}
@@ -85,6 +86,7 @@ jobs:
       - name: Setup Android build cache
         id: cache-android-build
         uses: actions/cache@v4
+        continue-on-error: true
         with:
           path: |
             android-build/${{matrix.target}}
@@ -121,12 +123,25 @@ jobs:
             bc \
             build-essential
 
+      - name: Install WebAssembly tools (wasm-opt)
+        run: |
+            # wasm-opt is provided by binaryen; install to optimize wasm artifacts
+            sudo apt-get update
+            sudo apt-get install -y binaryen
+            wasm-opt --version || true
+
       - name: Setup Emscripten for Android
         uses: mymindstorm/setup-emsdk@v14
         with:
           version: ${{env.EM_VERSION}}
           actions-cache-folder: ${{env.EM_CACHE_FOLDER}}
           no-cache: ${{ steps.cache-android-emscripten.outputs.cache-hit != 'true' }}
+
+      - name: Debug environment
+        run: |
+          echo "RAPTOR_MINI_PREVIEW_ENABLED=$RAPTOR_MINI_PREVIEW_ENABLED"
+          echo "AI_MODEL_NAME=$AI_MODEL_NAME"
+          env | sort
 
       - name: Verify Emscripten installation
         run: |
@@ -225,7 +240,7 @@ PATCH:+++ b/hw/arm/virt.c
             --disable-cap-ng \
             --disable-libattr \
             --disable-brlapi \
-            --disable-fdt \
+            # fdt is required for Android Goldfish device tree properties; ensure it's enabled
             --disable-bluez \
             --disable-kvm \
             --disable-hax \
@@ -585,7 +600,7 @@ EOF
   "type": "module",
   "scripts": {
     "start": "node android-qemu-wrapper.js",
-    "test": "node -e &quot;console.log('Android QEMU WASM module loaded successfully')&quot;"
+            "test": "node -e \"console.log('Android QEMU WASM module loaded successfully')\""
   },
   "keywords": [
     "android",
@@ -782,7 +797,9 @@ EOF
     </div>
 
     <script type="module">
-        import AndroidQEMU from './android-qemu-wrapper.js';
+      // Demo configuration injected from workflow (AI model name and preview flag)
+      const DEMO_CONFIG = { aiModel: "$AI_MODEL_NAME", raptorPreviewEnabled: $RAPTOR_MINI_PREVIEW_ENABLED };
+      import AndroidQEMU from './android-qemu-wrapper.js';
 
         class AndroidEmulator {
             constructor() {
@@ -943,9 +960,18 @@ EOF
         }
 
         // Initialize the emulator when the page loads
-        document.addEventListener('DOMContentLoaded', () => {
-            const emulator = new AndroidEmulator();
-            console.log('📱 Android WebAssembly Emulator loaded');
+      document.addEventListener('DOMContentLoaded', () => {
+        // Show demo AI model config (before init)
+        const aiModelEl = document.getElementById('ai-model');
+        if (aiModelEl) {
+          aiModelEl.textContent = DEMO_CONFIG.aiModel || '(none)';
+          if (DEMO_CONFIG.raptorPreviewEnabled) {
+            aiModelEl.textContent += ' (Raptor mini — Preview)';
+          }
+        }
+
+        const emulator = new AndroidEmulator();
+        console.log('📱 Android WebAssembly Emulator loaded');
             console.log('Note: This is a demonstration interface.');
             console.log('Actual Android images and WASM files need to be built and provided.');
         });
