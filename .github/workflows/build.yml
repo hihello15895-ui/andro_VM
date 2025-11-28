@@ -20,7 +20,7 @@ jobs:
           version: 3.1.58
 
       - name: Install tools
-        run: sudo apt-get update -y && sudo apt-get install -y git make binaryen
+        run: sudo apt-get update -y && sudo apt-get install -y git make binaryen wget
 
       - name: Clone v86
         run: |
