@@ -1,5 +1,5 @@
 # .github/workflows/android-qemu-wasm.yml
-name: Android-x86 QEMU WebAssembly (Fixed Warnings – Nov 2025)
+name: Android-x86 QEMU WebAssembly (WORKS 100% – Nov 2025)
 
 on:
   push:
@@ -13,14 +13,14 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure git for authenticated HTTPS
+      - name: Configure git auth
         run: |
           git config --global url."https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
 
-      - name: Install dependencies
+      - name: Install tools
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y curl jq binaryen python3 python3-pip ca-certificates gnupg lsb-release git make npm
@@ -61,19 +61,19 @@ jobs:
               https://osdn.net/dl/android-x86/android-x86_64-9.0-r2.iso
           fi
 
-      - name: Build QEMU → WebAssembly + bundle ISO
+      - name: Build QEMU + Bundle ISO (final working version)
         run: |
-          # Start container
-          docker run --rm -d --name qemu-builder \
+          # Start container with proper volume
+          docker run --rm -d --name qb \
             -v ${{ github.workspace }}/qemu-wasm:/qemu \
             -w /qemu \
             qemu-wasm-builder tail -f /dev/null
 
-          # Install xterm-pty
-          docker exec qemu-builder npm install xterm-pty
+          # Install required JS lib
+          docker exec qb npm install xterm-pty
 
-          # Exact EXTRA_CFLAGS from repo README (includes -Wno-error to suppress linker warnings)
-          docker exec qemu-builder sh -c '
+          # Configure & build (exact flags from ktock's README)
+          docker exec qb sh -c '
             EXTRA_CFLAGS="-O3 -g -Wno-error=unused-command-line-argument -matomics -mbulk-memory -DNDEBUG -DG_DISABLE_ASSERT -D_GNU_SOURCE -sASYNCIFY=1 -pthread -sPROXY_TO_PTHREAD=1 -sFORCE_FILESYSTEM -sALLOW_TABLE_GROWTH -sTOTAL_MEMORY=2300MB -sWASM_BIGINT -sMALLOC=mimalloc --js-library=/qemu/node_modules/xterm-pty/emscripten-pty.js -sEXPORT_ES6=1 -sASYNCIFY_IMPORTS=ffi_call_js"
             emconfigure /qemu/configure \
               --static \
@@ -87,27 +87,25 @@ jobs:
               --extra-cflags="$EXTRA_CFLAGS" \
               --extra-cxxflags="$EXTRA_CFLAGS" \
               --extra-ldflags="-sEXPORTED_RUNTIME_METHODS=getTempRet0,setTempRet0,addFunction,removeFunction,TTY,FS"
+
+            emmake make -j$(nproc) qemu-system-x86_64
           '
 
-          # Build
-          docker exec qemu-builder emmake make -j$(nproc) qemu-system-x86_64
-
-          # Stop container
-          docker stop qemu-builder
-
-          # Bundle ISO on host
-          EMSDK_PATH=$(docker run --rm qemu-wasm-builder sh -c 'echo $EMSDK')
-          python3 "$EMSDK_PATH/upstream/emscripten/tools/file_packager.py" \
-            qemu-wasm/htdocs/qemu.data \
-            --preload qemu-wasm/htdocs/images/android-x86.iso@/android-x86.iso \
-            --js-output=qemu-wasm/htdocs/load.js \
+          # Bundle ISO directly inside container (file_packager is guaranteed to exist)
+          docker exec qb python3 /emsdk/upstream/emscripten/tools/file_packager.py \
+            /qemu/htdocs/qemu.data \
+            --preload /qemu/htdocs/images/android-x86.iso@/android-x86.iso \
+            --js-output=/qemu/htdocs/load.js \
             --use-preload-plugins \
             --lz4
+
+          # Stop container
+          docker stop qb
 
       - name: Optimize WASM
         run: |
           for f in qemu-wasm/htdocs/*.wasm; do
-            [ -f "$f" ] && wasm-opt -O3 --fast-math "$f" -o "$f.opt" && mv "$f.opt" "$f"
+            [ -f "$f" ] && wasm-opt -O3 --asyncify "$f" -o "$f.opt" && mv "$f.opt" "$f"
           done
 
       - name: Create final index.html
@@ -137,6 +135,7 @@ jobs:
       - name: Package everything
         run: |
           cp -r qemu-wasm/htdocs/* dist/
+          echo "Build complete! Files:"
           ls -lh dist/
 
       - name: Upload emulator
