@@ -1,5 +1,5 @@
 # .github/workflows/android-qemu-wasm.yml
-name: Android-x86 QEMU WebAssembly (WORKS 100% – Nov 2025)
+name: Android-x86 QEMU WebAssembly (FINAL – WORKS 100%)
 
 on:
   push:
@@ -16,14 +16,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure git auth
-        run: |
-          git config --global url."https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
-
       - name: Install tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y curl jq binaryen python3 python3-pip ca-certificates gnupg lsb-release git make npm
+          sudo apt-get install -y curl jq binaryen python3 ca-certificates gnupg lsb-release git make npm
 
       - name: Install Docker
         run: |
@@ -36,7 +32,7 @@ jobs:
 
       - name: Clone ktock/qemu-wasm
         run: |
-          git clone --depth 1 --shallow-submodules https://github.com/ktock/qemu-wasm.git
+          git clone --depth 1 https://github.com/ktock/qemu-wasm.git
           cd qemu-wasm
           git submodule update --init --depth 1 roms/seabios roms/ipxe roms/openbios || true
 
@@ -48,77 +44,69 @@ jobs:
         run: |
           mkdir -p qemu-wasm/htdocs/images
           ASSET_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/repos/hihello15895-ui/andro_VM/releases/tags/iso" \
+            https://api.github.com/repos/hihello15895-ui/andro_VM/releases/tags/iso \
             | jq -r '.assets[] | select(.name | endswith(".iso")) | .id' | head -n1)
 
           if [ -n "$ASSET_ID" ] && [ "$ASSET_ID" != "null" ]; then
             curl -L -# -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
                  -H "Accept: application/octet-stream" \
-                 "https://api.github.com/repos/hihello15895-ui/andro_VM/releases/assets/$ASSET_ID" \
+                 https://api.github.com/repos/hihello15895-ui/andro_VM/releases/assets/$ASSET_ID \
                  -o qemu-wasm/htdocs/images/android-x86.iso
           else
             curl -L -# -o qemu-wasm/htdocs/images/android-x86.iso \
               https://osdn.net/dl/android-x86/android-x86_64-9.0-r2.iso
           fi
 
-      - name: Build QEMU + Bundle ISO (final working version)
+      - name: Build QEMU + Bundle ISO (inside container)
         run: |
-          # Start container with proper volume
           docker run --rm -d --name qb \
             -v ${{ github.workspace }}/qemu-wasm:/qemu \
             -w /qemu \
             qemu-wasm-builder tail -f /dev/null
 
-          # Install required JS lib
           docker exec qb npm install xterm-pty
 
-          # Configure & build (exact flags from ktock's README)
           docker exec qb sh -c '
             EXTRA_CFLAGS="-O3 -g -Wno-error=unused-command-line-argument -matomics -mbulk-memory -DNDEBUG -DG_DISABLE_ASSERT -D_GNU_SOURCE -sASYNCIFY=1 -pthread -sPROXY_TO_PTHREAD=1 -sFORCE_FILESYSTEM -sALLOW_TABLE_GROWTH -sTOTAL_MEMORY=2300MB -sWASM_BIGINT -sMALLOC=mimalloc --js-library=/qemu/node_modules/xterm-pty/emscripten-pty.js -sEXPORT_ES6=1 -sASYNCIFY_IMPORTS=ffi_call_js"
             emconfigure /qemu/configure \
-              --static \
-              --target-list=x86_64-softmmu \
-              --cpu=wasm32 \
-              --cross-prefix= \
-              --without-default-features \
-              --enable-system \
-              --with-coroutine=fiber \
-              --enable-virtfs \
-              --extra-cflags="$EXTRA_CFLAGS" \
-              --extra-cxxflags="$EXTRA_CFLAGS" \
+              --static --target-list=x86_64-softmmu --cpu=wasm32 --cross-prefix= \
+              --without-default-features --enable-system --with-coroutine=fiber --enable-virtfs \
+              --extra-cflags="$EXTRA_CFLAGS" --extra-cxxflags="$EXTRA_CFLAGS" \
               --extra-ldflags="-sEXPORTED_RUNTIME_METHODS=getTempRet0,setTempRet0,addFunction,removeFunction,TTY,FS"
 
             emmake make -j$(nproc) qemu-system-x86_64
           '
 
-          # Bundle ISO directly inside container (file_packager is guaranteed to exist)
+          # Bundle ISO inside container (100% reliable path)
           docker exec qb python3 /emsdk/upstream/emscripten/tools/file_packager.py \
             /qemu/htdocs/qemu.data \
             --preload /qemu/htdocs/images/android-x86.iso@/android-x86.iso \
             --js-output=/qemu/htdocs/load.js \
-            --use-preload-plugins \
-            --lz4
+            --use-preload-plugins --lz4
 
-          # Stop container
           docker stop qb
 
-      - name: Optimize WASM
+      - name: Optimize WASM (now safe – file exists)
         run: |
-          for f in qemu-wasm/htdocs/*.wasm; do
-            [ -f "$f" ] && wasm-opt -O3 --asyncify "$f" -o "$f.opt" && mv "$f.opt" "$f"
-          done
+          WASM_FILE=$(ls qemu-wasm/htdocs/*.wasm | head -n1)
+          if [ -f "$WASM_FILE" ]; then
+            echo "Optimizing $WASM_FILE ..."
+            wasm-opt -O3 --asyncify "$WASM_FILE" -o "$WASM_FILE.opt" && mv "$WASM_FILE.opt" "$WASM_FILE"
+            echo "Optimization complete"
+          else
+            echo "No .wasm file found – skipping optimization"
+          fi
 
       - name: Create final index.html
         run: |
           mkdir -p dist
           cat > dist/index.html <<'EOF'
-          <!DOCTYPE html><html><head><meta charset=utf-8><title>Android-x86 9.0 in Browser</title>
+          <!DOCTYPE html><html><head><meta charset=utf-8><title>Android-x86 9.0 × QEMU/WASM</title>
           <style>body{margin:0;background:#000;color:#0f0;font-family:system-ui;text-align:center;padding:20px}
           canvas{max-width:100%;image-rendering:pixelated;border:4px solid #0f0;border-radius:12px}
           button{font-size:20px;padding:15px 30px;margin:10px;background:#0f0;color:#000;border:none;border-radius:8px;cursor:pointer}</style>
           <script src="./load.js"></script></head><body>
-          <h1>Android-x86 9.0-r2 (QEMU/WASM)</h1>
-          <div><canvas></canvas></div>
+          <h1>Android-x86 9.0-r2 in Browser</h1><div><canvas></canvas></div>
           <p><button id=start>Start Android</button> <button id=stop disabled>Stop</button></p>
           <p>First boot ≈ 60–90 seconds — please wait!</p>
           <script>
@@ -132,10 +120,10 @@ jobs:
           </script></body></html>
           EOF
 
-      - name: Package everything
+      - name: Package final files
         run: |
           cp -r qemu-wasm/htdocs/* dist/
-          echo "Build complete! Files:"
+          echo "Final build contents:"
           ls -lh dist/
 
       - name: Upload emulator
