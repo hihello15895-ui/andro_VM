@@ -38,7 +38,7 @@ jobs:
         run: docker build -t qemu-wasm-builder .
 
       - name: Download Android-x86 9.0-r2 ISO from your GitHub Release
-        uses: dsaltares/fetch-gh-release-asset@v1
+        uses: dsaltares/fetch-gh-release-asset@master
         with:
           repo: "hihello15895-ui/andro_VM"
           version: "iso"
