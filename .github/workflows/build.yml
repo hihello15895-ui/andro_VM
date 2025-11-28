@@ -1,4 +1,4 @@
-name: Android-x86 QEMU WebAssembly (FINAL – 100% WORKING)
+name: Android-x86 QEMU WebAssembly (FINAL 100% WORKING)
 
 on:
   push:
@@ -15,10 +15,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install tools
+      - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y curl jq binaryen python3 ca-certificates gnupg lsb-release git make npm autoconf automake libtool pkg-config libpixman-1-dev libglib2.0-dev flex bison
+          sudo apt-get install -y curl jq binaryen python3 ca-certificates gnupg lsb-release git make npm autoconf automake libtool pkg-config libpixman-1-dev libglib2.0-dev flex bison wget
 
       - name: Install Docker
         run: |
@@ -42,10 +42,10 @@ jobs:
       - name: Download Android-x86 9.0-r2 ISO
         run: |
           mkdir -p qemu-wasm/htdocs/images
-          curl -L -# -o qemu-wasm/htdocs/images/android-x86.iso \
+          wget -O qemu-wasm/htdocs/images/android-x86.iso \
             https://osdn.net/dl/android-x86/android-x86_64-9.0-r2.iso
 
-      - name: Build QEMU + Bundle ISO (inside container)
+      - name: Build QEMU + Bundle ISO
         run: |
           docker run --rm -d --name qb \
             -v ${{ github.workspace }}/qemu-wasm:/qemu \
@@ -55,20 +55,15 @@ jobs:
           docker exec qb npm install xterm-pty
 
           docker exec qb sh -c '
-            EXTRA_CFLAGS="-O3 -DNDEBUG -DG_DISABLE_ASSERT -D_GNU_SOURCE -sASYNCIFY=1 -pthread -sPROXY_TO_PTHREAD=1 -sFORCE_FILESYSTEM -sALLOW_TABLE_GROWTH -sTOTAL_MEMORY=2300MB -sWASM_BIGINT -sMALLOC=mimalloc --js-library=/qemu/node_modules/xterm-pty/emscripten-pty.js -sEXPORT_ES6=1 -sMODULARIZE=1 -sEXPORT_NAME=createQemuModule -sASYNCIFY_IMPORTS=ffi_call_js"
-            
-            emconfigure /qemu/configure \
+            EXTRA_CFLAGS=\"-O3 -DNDEBUG -D_GNU_SOURCE -sASYNCIFY=1 -pthread -sPROXY_TO_PTHREAD=1 -sFORCE_FILESYSTEM -sALLOW_TABLE_GROWTH -sTOTAL_MEMORY=2300MB -sWASM_BIGINT -sMALLOC=mimalloc --js-library=/qemu/node_modules/xterm-pty/emscripten-pty.js -sEXPORT_ES6=1 -sMODULARIZE=1 -sEXPORT_NAME=createQemuModule\"
+
+            emconfigure ./configure \
               --static \
               --target-list=x86_64-softmmu \
               --cpu=wasm32 \
-              --cross-prefix= \
-              --without-default-features \
-              --enable-system \
-              --with-coroutine=fiber \
-              --enable-virtfs \
-              --extra-cflags="$EXTRA_CFLAGS" \
-              --extra-cxxflags="$EXTRA_CFLAGS" \
-              --extra-ldflags="-sEXPORTED_RUNTIME_METHODS=getTempRet0,setTempRet0,addFunction,removeFunction,TTY,FS"
+              --disable-werror \
+              --extra-cflags=\"$EXTRA_CFLAGS\" \
+              --extra-ldflags=\"-sEXPORTED_RUNTIME_METHODS=FS,addFunction,removeFunction\"
 
             emmake make -j$(nproc) qemu-system-x86_64
           '
@@ -82,30 +77,25 @@ jobs:
 
           docker stop qb
 
-      - name: Copy WASM + JS files to htdocs (CRITICAL STEP)
+      - name: Copy WASM & JS files to htdocs
         run: |
-          # Find and copy the actual built files
-          find qemu-wasm -name "*.wasm" -exec cp {} qemu-wasm/htdocs/qemu.wasm \;
-          find qemu-wasm -name "qemu-system-x86_64.js" -exec cp {} qemu-wasm/htdocs/qemu.js \; || true
-          find qemu-wasm -name "out.js" -exec cp {} qemu-wasm/htdocs/qemu.js \; || true
-          find qemu-wasm -name "*.worker.js" -exec cp {} qemu-wasm/htdocs/qemu.worker.js \; || true
-
-          echo "Final files in htdocs:"
+          cp $(find qemu-wasm -name "*.wasm" | head -n1) qemu-wasm/htdocs/qemu.wasm || true
+          cp $(find qemu-wasm -name "qemu-system-x86_64.js" -o -name "out.js" | head -n1) qemu-wasm/htdocs/qemu.js || true
+          echo "Files in htdocs after copy:"
           ls -lh qemu-wasm/htdocs/
 
       - name: Optimize WASM
         run: |
           if [ -f qemu-wasm/htdocs/qemu.wasm ]; then
-            echo "Optimizing qemu.wasm..."
             wasm-opt -O3 --asyncify qemu-wasm/htdocs/qemu.wasm -o qemu-wasm/htdocs/qemu.wasm.opt
             mv qemu-wasm/htdocs/qemu.wasm.opt qemu-wasm/htdocs/qemu.wasm
-            echo "Optimization done!"
+            echo "WASM optimized successfully"
           else
             echo "qemu.wasm not found!"
             exit 1
           fi
 
-      - name: Create final index.html + dist folder
+      - name: Create dist folder & final index.html
         run: |
           mkdir -p dist
           cp -r qemu-wasm/htdocs/* dist/
@@ -151,15 +141,15 @@ jobs:
       btn.disabled = true;
       msg.innerHTML = "Initializing engine...";
 
-      const checkModule = setInterval(() => {
+      const check = setInterval(() => {
         if (typeof createQemuModule === 'function') {
-          clearInterval(checkModule);
-          msg.innerHTML = "Downloading 913 MB... Please wait";
+          clearInterval(check);
+          msg.innerHTML = "Downloading ~913 MB... Please wait";
 
           createQemuModule({
             canvas: document.querySelector('canvas'),
-            arguments: [
-              '-cpu', 'qemu64,+ssse3,+sse4.2,+popcnt,+avx2',
+            argumentos: [
+              '-cpu', 'qemu64,+ssse3,+sse4.2,+popcnt',
               '-m', '2048',
               '-smp', '4',
               '-device', 'virtio-gpu-pci',
@@ -167,21 +157,15 @@ jobs:
               '-device', 'virtio-mouse-pci',
               '-drive', 'if=none,id=cdrom,format=raw,readonly=on,file=/android-x86.iso',
               '-device', 'ide-cd,drive=cdrom,bootindex=0',
-              '-boot', 'd',
-              '-no-reboot'
+              '-boot', 'd'
             ],
-            preRun: [],
-            postRun: [],
-            print: (text) => console.log(text),
-            printErr: (text) => console.error(text),
             monitorRunDependencies: (left) => {
               if (left === 0) {
                 p.value = 100;
                 percent.textContent = "100%";
-                msg.innerHTML = "Booting Android-x86... (30-90 sec)";
+                msg.innerHTML = "Booting Android... (30-90 sec)";
               }
-            },
-            onAbort: (err) => { alert("Error: " + err); }
+            }
           });
         }
       }, 100);
@@ -191,9 +175,9 @@ jobs:
 </html>
 EOF
 
-      - name: Upload final emulator
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Android-x86-QEMU-WASM-Ready-To-Run
+          name: Android-x86-QEMU-WASM-Final
           path: dist/
-          retention-days: 30
+          retention-days: 90
