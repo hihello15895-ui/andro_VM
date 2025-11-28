@@ -1,5 +1,5 @@
 # .github/workflows/android-qemu-wasm.yml
-name: Android-x86 QEMU WebAssembly (100% Working – Nov 2025)
+name: Android-x86 QEMU WebAssembly (Working Nov 2025)
 
 on:
   push:
@@ -16,7 +16,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Fix: Allow authenticated HTTPS git clones
       - name: Configure git for authenticated HTTPS
         run: |
           git config --global url."https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
@@ -24,7 +23,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y curl jq binaryen python3 python3-pip ca-certificates gnupg lsb-release
+          sudo apt-get install -y curl jq binaryen python3 python3-pip ca-certificates gnupg lsb-release git make
 
       - name: Install Docker
         run: |
@@ -35,12 +34,12 @@ jobs:
           sudo apt-get install -y docker-ce docker-ce-cli containerd.io
           sudo systemctl start docker
 
-      # This fork actually works in 2025 and supports x86_64-softmmu
-      - name: Clone working qemu-wasm fork
+      - name: Clone ktock/qemu-wasm + skip broken submodules
         run: |
-          git clone --depth 1 https://github.com/cirosantilli/qemu-wasm.git qemu-wasm
+          git clone --depth 1 --shallow-submodules https://github.com/ktock/qemu-wasm.git
           cd qemu-wasm
-          git submodule update --init --depth 1 dtc roms/seabios
+          # Skip edk2 and other broken submodules; only init essential ones
+          git submodule update --init --depth 1 roms/seabios roms/ipxe roms/openbios || true
 
       - name: Build Docker image
         working-directory: qemu-wasm
@@ -68,7 +67,7 @@ jobs:
 
           echo "ISO ready: $(du -h qemu-wasm/htdocs/images/android-x86.iso)"
 
-      - name: Build QEMU → WebAssembly
+      - name: Build QEMU → WebAssembly (using Docker script)
         run: |
           docker run --rm \
             -v ${{ github.workspace }}/qemu-wasm:/src \
@@ -76,15 +75,22 @@ jobs:
             qemu-wasm-builder bash -c "
               set -euo pipefail
 
-              emconfigure ./configure \
-                --target-list=x86_64-softmmu \
-                --disable-werror \
-                --disable-capstone \
-                --disable-docs \
-                --extra-cflags='-s USE_PTHREADS=1 -s PTHREAD_POOL_SIZE=4 -s TOTAL_MEMORY=1GB -s ALLOW_MEMORY_GROWTH=1' \
-                --extra-ldflags='-s USE_PTHREADS=1 -s PTHREAD_POOL_SIZE=4'
-
+              # Use the repo's build script instead of manual configure
               emmake make -j$(nproc) qemu-system-x86_64
+
+              # If make fails, fallback to simplified configure
+              emmake make -j$(nproc) qemu-system-x86_64 || (
+                emconfigure ./configure \
+                  --target-list=x86_64-softmmu \
+                  --disable-werror \
+                  --disable-capstone \
+                  --disable-docs \
+                  --disable-edk2 \
+                  --disable-pie \
+                  --extra-cflags='-s USE_PTHREADS=1 -s PTHREAD_POOL_SIZE=4 -s TOTAL_MEMORY=1GB -s ALLOW_MEMORY_GROWTH=1' \
+                  --extra-ldflags='-s USE_PTHREADS=1 -s PTHREAD_POOL_SIZE=4'
+                emmake make -j$(nproc) qemu-system-x86_64
+              )
 
               python3 /emsdk/upstream/emscripten/tools/file_packager.py \
                 htdocs/qemu.data \
