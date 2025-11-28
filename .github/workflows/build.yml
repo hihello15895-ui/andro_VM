@@ -20,7 +20,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y curl jq binaryen python3 ca-certificates gnupg lsb-release git make npm
-      
+
       - name: Install Docker
         run: |
           sudo mkdir -p /etc/apt/keyrings
@@ -29,13 +29,13 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y docker-ce docker-ce-cli containerd.io
           sudo systemctl start docker
-      
+
       - name: Clone ktock/qemu-wasm
         run: |
           git clone --depth 1 https://github.com/ktock/qemu-wasm.git
           cd qemu-wasm
           git submodule update --init --depth 1 roms/seabios roms/ipxe roms/openbios || true
-      
+
       - name: Build Docker image
         working-directory: qemu-wasm
         run: docker build -t qemu-wasm-builder .
@@ -43,19 +43,22 @@ jobs:
       - name: Download Android-x86 9.0-r2 ISO
         run: |
           mkdir -p qemu-wasm/htdocs/images
-          ASSET_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            https://api.github.com/repos/hihello15895-ui/andro_VM/releases/tags/iso \
-            | jq -r '.assets[] | select(.name | endswith(".iso")) | .id' | head -n1)
-          if [ -n "$ASSET_ID" ] && [ "$ASSET_ID" != "null" ]; then
+          ASSET_URL=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/hihello15895-ui/andro_VM/releases/tags/iso" \
+            | jq -r '.assets[] | select(.name | endswith(".iso")) | .browser_download_url' | head -n1)
+
+          if [ -n "$ASSET_URL" ] && [ "$ASSET_URL" != "null" ]; then
+            echo "Downloading ISO from GitHub release..."
             curl -L -# -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
                  -H "Accept: application/octet-stream" \
-                 https://api.github.com/repos/hihello15895-ui/andro_VM/releases/assets/$ASSET_ID \
+                 "$ASSET_URL" \
                  -o qemu-wasm/htdocs/images/android-x86.iso
           else
+            echo "Downloading ISO from OSDN mirror..."
             curl -L -# -o qemu-wasm/htdocs/images/android-x86.iso \
               https://osdn.net/dl/android-x86/android-x86_64-9.0-r2.iso
           fi
-      
+
       - name: Build QEMU + Bundle ISO (inside container)
         run: |
           docker run --rm -d --name qb \
@@ -75,11 +78,9 @@ jobs:
             emmake make -j$(nproc) qemu-system-x86_64
           '
           
-          # CRITICAL FIX: Copy compiled QEMU WASM files to htdocs
+          # Copy compiled QEMU files to htdocs
           docker exec qb sh -c '
-            echo "Searching for compiled QEMU files..."
-            find /qemu -name "qemu-system-x86_64.*" -type f
-            echo "Copying to htdocs..."
+            echo "Copying QEMU files to htdocs..."
             cp /qemu/build/qemu-system-x86_64.* /qemu/htdocs/ 2>/dev/null || \
             cp /qemu/qemu-system-x86_64.* /qemu/htdocs/ 2>/dev/null || \
             find /qemu -name "qemu-system-x86_64.*" -exec cp {} /qemu/htdocs/ \;
@@ -87,7 +88,7 @@ jobs:
             ls -lh /qemu/htdocs/
           '
           
-          # Bundle ISO inside container
+          # Bundle ISO
           docker exec qb python3 /emsdk/upstream/emscripten/tools/file_packager.py \
             /qemu/htdocs/qemu.data \
             --preload /qemu/htdocs/images/android-x86.iso@/android-x86.iso \
@@ -95,12 +96,12 @@ jobs:
             --use-preload-plugins --lz4
           
           docker stop qb
-      
+
       - name: Verify WASM files
         run: |
           echo "Checking for QEMU WASM files..."
           ls -lh qemu-wasm/htdocs/*.wasm qemu-wasm/htdocs/*.js 2>/dev/null || echo "WARNING: WASM files not found!"
-      
+
       - name: Optimize WASM (now safe – file exists)
         run: |
           WASM_FILE=$(ls qemu-wasm/htdocs/*.wasm 2>/dev/null | head -n1)
@@ -112,7 +113,7 @@ jobs:
             echo "ERROR: No .wasm file found – skipping optimization"
             exit 1
           fi
-      
+
       - name: Create final index.html
         run: |
           mkdir -p dist
@@ -147,7 +148,7 @@ jobs:
             };
           </script></body></html>
           EOF
-      
+
       - name: Package final files
         run: |
           cp -r qemu-wasm/htdocs/* dist/
@@ -155,7 +156,7 @@ jobs:
           ls -lh dist/
           echo "Total size:"
           du -sh dist/
-      
+
       - name: Upload emulator
         uses: actions/upload-artifact@v4
         with:
