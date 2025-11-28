@@ -1,106 +1,72 @@
 # .github/workflows/android-qemu-wasm.yml
-name: Android-x86 QEMU WebAssembly Emulator
+name: Android-x86 QEMU WebAssembly (using local ISO)
 
 on:
   push:
     branches: [ main, master ]
   pull_request:
   workflow_dispatch:
-    inputs:
-      download_iso:
-        description: 'Download real ~700 MB Android-x86 ISO (true/false)'
-        required: false
-        default: 'true'
-      use_test_iso:
-        description: 'Use tiny dummy image if download fails'
-        required: false
-        default: 'true'
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Docker (official method – fixes containerd conflict)
+      - name: Install Docker (official – works on Ubuntu 24.04)
         run: |
           sudo apt-get update
           sudo apt-get install -y ca-certificates curl gnupg lsb-release
           sudo mkdir -p /etc/apt/keyrings
           curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
           echo \
-            "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-            https://download.docker.com/linux/ubuntu \
+            "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
             $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
           sudo apt-get update
-          sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+          sudo apt-get install -y docker-ce docker-ce-cli containerd.io
           sudo systemctl start docker
 
-      - name: Clone ktock/qemu-wasm (official QEMU → WebAssembly port)
+      - name: Clone ktock/qemu-wasm
         run: |
           git clone --depth 1 --recursive https://github.com/ktock/qemu-wasm.git
-          cd qemu-wasm
-          git submodule update --init --recursive
 
       - name: Build QEMU-WASM Docker image
         working-directory: qemu-wasm
         run: docker build -t qemu-wasm-builder .
 
-      - name: Download or copy Android-x86 ISO
+      - name: Copy your local android-x86_64-9.0-r2.iso into build folder
         run: |
-          set -euo pipefail
           mkdir -p qemu-wasm/htdocs/images
-          cd qemu-wasm/htdocs/images
-
-          ISO="android-x86.iso"
-          URL="https://osdn.net/dl/android-x86/android-x86_64-9.0-r2.iso"  # newer, boots faster
-
-          # If user disabled download and there's already an ISO in repo → use it
-          if [ "${{ inputs.download_iso || 'true' }}" = "false" ]; then
-            if compgen -G "../../*android*.iso" > /dev/null; then
-              cp ../../*android*.iso "$ISO"
-              echo "Using local ISO from repository"
-              exit 0
-            fi
+          # Find the ISO (case-insensitive, any extension variation)
+          ISO_PATH=$(find . -maxdepth 1 -iname "*android*x86*9.0*r2*.iso" | head -n1)
+          if [ -z "$ISO_PATH" ]; then
+            echo "ERROR: android-x86_64-9.0-r2.iso not found in repository root!"
+            exit 1
           fi
+          echo "Found ISO: $ISO_PATH → copying"
+          cp "$ISO_PATH" qemu-wasm/htdocs/images/android-x86.iso
+          echo "ISO ready: $(du -h qemu-wasm/htdocs/images/android-x86.iso | cut -f1)"
 
-          # Download real ISO
-          echo "Downloading Android-x86 9.0-r2 (~750 MB)..."
-          wget --progress -O "$ISO.part" "$URL" || curl -L --fail -o "$ISO.part" "$URL"
-          mv "$ISO.part" "$ISO"
-
-          # Fallback: tiny dummy image
-          if [ ! -f "$ISO" ] && [ "${{ inputs.use_test_iso }}" = "true" ]; then
-            echo "Creating 1 MiB dummy image"
-            dd if=/dev/zero of="$ISO" bs=1M count=1
-          fi
-
-          echo "Final ISO size: $(du -h "$ISO" | cut -f1)"
-          sha256sum "$ISO"
-
-      - name: Build qemu-system-x86_64.wasm + package ISO
+      - name: Build real QEMU → WebAssembly + bundle your ISO
         run: |
           docker run --rm \
             -v ${{ github.workspace }}/qemu-wasm:/src \
             -w /src \
             qemu-wasm-builder bash -c "
               set -euo pipefail
-
               emconfigure ./configure \
                 --target-list=x86_64-softmmu \
                 --disable-werror \
                 --disable-capstone \
                 --disable-docs \
-                --disable-system \
-                --extra-cflags='-s USE_PTHREADS=1 -s PROXY_TO_PTHREAD=1' \
-                --extra-ldflags='-s USE_PTHREADS=1 -s PROXY_TO_PTHREAD=1'
+                --extra-cflags='-s USE_PTHREADS=1' \
+                --extra-ldflags='-s USE_PTHREADS=1 -s PROXY_TO_PTHREAD=1 -s TOTAL_MEMORY=512MB'
 
               emmake make -j$(nproc) qemu-system-x86_64
 
-              # Bundle ISO into browser-loadable .data file
               python3 /emsdk/upstream/emscripten/tools/file_packager.py \
                 htdocs/qemu.data \
                 --preload images/android-x86.iso@/android-x86.iso \
@@ -109,57 +75,51 @@ jobs:
                 --lz4
             "
 
-      - name: Install binaryen (for wasm-opt)
-        run: sudo apt-get install -y binaryen
-
-      - name: Optimize WASM (smaller + faster)
+      - name: Install binaryen + optimize WASM
         run: |
+          sudo apt-get install -y binaryen
           for f in qemu-wasm/htdocs/*.wasm; do
-            if [ -f "$f" ]; then
-              echo "Optimizing $f ..."
-              wasm-opt -O3 --strip-debug --zero-filled-memory --fast-math "$f" -o "$f.opt"
-              mv "$f.opt" "$f"
-            fi
+            [ -f "$f" ] && wasm-opt -O3 --strip-debug --fast-math "$f" -o "$f.opt" && mv "$f.opt" "$f"
           done
 
-      - name: Create final demo page
+      - name: Create final index.html (beautiful + working)
         run: |
           mkdir -p dist
           cat > dist/index.html <<'EOF'
           <!DOCTYPE html>
-          <html lang="en">
+          <html>
           <head>
             <meta charset="utf-8">
-            <title>Android-x86 × QEMU in Browser</title>
+            <title>Android 9.0 x86-64 × QEMU/WASM</title>
             <style>
-              body { margin:0; background:#000; font-family:sans-serif; color:#0f0; text-align:center; padding:20px; }
-              canvas { max-width:100%; height:auto; border:3px solid #0f0; border-radius:8px; }
-              button { font-size:18px; padding:12px 24px; margin:10px; cursor:pointer; }
+              body { margin:0; background:#000; color:#0f0; font-family:system-ui; text-align:center; text-align:center; padding:20px; }
+              canvas { max-width:100%; image-rendering:pixelated; border:4px solid #0f0; border-radius:12px; }
+              button { font-size:20px; padding:15px 30px; margin:15px; background:#0f0; color:#000; border:none; border-radius:8px; cursor:pointer; }
             </style>
             <script src="./load.js"></script>
           </head>
           <body>
-            <h1>Android-x86 running via QEMU/WebAssembly</h1>
+            <h1>Android-x86 9.0-r2 running in your browser</h1>
             <div id="screen"><canvas></canvas></div>
             <p>
-              <button id="start>Start Android</button>
+              <button id="start">Start Android</button>
               <button id="stop" disabled>Stop</button>
             </p>
-            <p><strong>First boot: ~60–90 seconds</strong> — please wait!</p>
+            <p>First boot takes ~60–90 seconds — be patient!</p>
 
             <script>
               document.getElementById('start').onclick = () => {
                 Module({
                   canvas: document.querySelector('canvas'),
                   arguments: [
-                    '-cpu', 'qemu64,+ssse3,+sse4.1,+sse4.2,+popcnt',
-                    '-m', '1536',
-                    '-smp', '2',
+                    '-cpu', 'qemu64,+ssse3,+sse4.2',
+                    '-m', '2048',
+                    '-smp', '4',
                     '-M', 'q35',
                     '-device', 'virtio-gpu-pci',
                     '-device', 'virtio-keyboard-pci',
                     '-device', 'virtio-mouse-pci',
-                    '-drive', 'if=none,id=cdrom,format=raw,file=/android-x86.iso,readonly=on',
+                    '-drive', 'if=none,id=cdrom,format=raw,readonly=on,file=/android-x86.iso',
                     '-device', 'ide-cd,drive=cdrom,bootindex=0',
                     '-boot', 'd',
                     '-rtc', 'base=localtime',
@@ -169,7 +129,6 @@ jobs:
                 document.getElementById('start').disabled = true;
                 document.getElementById('stop').disabled = false;
               };
-
               document.getElementById('stop').onclick = () => {
                 if (Module && Module.stop) Module.stop();
                 document.getElementById('start').disabled = false;
@@ -180,15 +139,15 @@ jobs:
           </html>
           EOF
 
-      - name: Package everything
+      - name: Package final files
         run: |
           cp -r qemu-wasm/htdocs/* dist/
-          echo "Final artifacts:"
+          echo "Build complete! Contents of dist/:"
           ls -lh dist/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: android-x86-qemu-wasm-emulator
+          name: android-x86-9-qemu-wasm
           path: dist/
-          retention-days: 30
+          retention-days: 90
