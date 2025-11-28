@@ -143,33 +143,33 @@ jobs:
             fi
           done
 
-          # If no expected JS or WASM files produced, try the generic make and npm fallback
+          # If no expected JS or WASM files produced in v86 root, check build/ directory
           if [ -z "$(ls *.js 2>/dev/null)" ] && [ -z "$(ls *.wasm 2>/dev/null)" ]; then
             echo "No js/wasm produced by Make; running 'make' with default target"
             emmake make -j$(nproc) || true
           fi
-          if [ -z "$(ls *.js 2>/dev/null)" ] && [ -z "$(ls *.wasm 2>/dev/null)" ]; then
+          # If still not, check build/ artifacts (v86 uses build/* outputs)
+          if [ -z "$(ls *.js 2>/dev/null)" ] && [ -z "$(ls *.wasm 2>/dev/null)" ] && [ -z "$(ls build/*.js 2>/dev/null)" ] && [ -z "$(ls build/*.wasm 2>/dev/null)" ]; then
             echo "Still no build artifacts; trying npm build as fallback"
             if [ -f package.json ]; then
               npm ci || npm install || true
               npm run build || true
             fi
           fi
-          echo 'Produced JS: ' $(ls *.js 2>/dev/null || true)
-          echo 'Produced WASM: ' $(ls *.wasm 2>/dev/null || true)
+          echo 'Produced JS: ' $(ls *.js 2>/dev/null || true) $(ls build/*.js 2>/dev/null || true)
+          echo 'Produced WASM: ' $(ls *.wasm 2>/dev/null || true) $(ls build/*.wasm 2>/dev/null || true)
           echo 'Build directory contents:'
           ls -la || true
-          # Ensure at least one artifact exists
-          if [ -z "$(ls *.js 2>/dev/null)" ] && [ -z "$(ls *.wasm 2>/dev/null)" ]; then
+          # Ensure at least one artifact exists (either in root or build/ dir)
+          if [ -z "$(ls *.js 2>/dev/null)" ] && [ -z "$(ls *.wasm 2>/dev/null)" ] && [ -z "$(ls build/*.js 2>/dev/null)" ] && [ -z "$(ls build/*.wasm 2>/dev/null)" ]; then
             echo "Build failed: no .js or .wasm artifacts found in v86/" >&2
             exit 2
           fi
 
+        
+
       # This is the ONLY safe way to do WASM optimization in GitHub Actions
-      - name: Optimize WASM files
-        run: |
-          cd v86
-          bash -c 'for f in *.wasm; do [ -f "$f" ] && wasm-opt -O4 --strip "$f" -o "$f.opt" && mv "$f.opt" "$f" || true; done'
+      
 
       - name: Package everything
         run: |
@@ -177,8 +177,16 @@ jobs:
           # Copy any produced JS and WASM artifacts to dist/
           cp v86/*.js dist/ 2>/dev/null || true
           cp v86/*.wasm dist/ 2>/dev/null || true
-            cp v86/images/android-x86.iso dist/ 2>/dev/null || true
-            echo 'dist contents:' && ls -la dist || true
+          cp v86/build/*.js dist/ 2>/dev/null || true
+          cp v86/build/*.mjs dist/ 2>/dev/null || true
+          cp v86/build/*.wasm dist/ 2>/dev/null || true
+          cp v86/images/android-x86.iso dist/ 2>/dev/null || true
+          echo 'dist contents:' && ls -la dist || true
+
+      - name: Optimize WASM files
+        run: |
+          # Optimize any wasm files in dist/ (packaged outputs)
+          bash -c 'for f in dist/*.wasm; do [ -f "$f" ] && wasm-opt -O4 --strip "$f" -o "$f.opt" && mv "$f.opt" "$f" || true; done'
 
       - name: Create demo page
         run: |
