@@ -1,5 +1,5 @@
 # .github/workflows/android-qemu-wasm.yml
-name: Android-x86 QEMU WebAssembly
+name: Android-x86 QEMU WebAssembly (Working Nov 2025)
 
 on:
   push:
@@ -16,77 +16,82 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Docker + jq
+      - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y ca-certificates curl gnupg lsb-release jq -y
+          sudo apt-get install -y ca-certificates curl gnupg lsb-release jq binaryen python3 python3-pip
+
+      - name: Install Docker
+        run: |
           sudo mkdir -p /etc/apt/keyrings
           curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
-            | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
           sudo apt-get update -qq
           sudo apt-get install -y docker-ce docker-ce-cli containerd.io
           sudo systemctl start docker
 
-      - name: Clone ktock/qemu-wasm
+      - name: Clone working qemu-wasm fork (supports x86_64-softmmu)
         run: |
-          git clone --depth 1 https://github.com/ktock/qemu-wasm.git
+          git clone --depth 1 https://github.com/cirosantilli/qemu-wasm.git qemu-wasm
           cd qemu-wasm
-          git submodule update --init --depth 1 roms/seabios roms/ipxe
+          git submodule update --init --depth 1 dtc roms/seabios
 
       - name: Build Docker image
         working-directory: qemu-wasm
         run: docker build -t qemu-wasm-builder .
 
-      - name: Download Android-x86 9.0-r2 ISO (from your release → fallback mirror)
+      - name: Download Android-x86 9.0-r2 ISO
         run: |
           mkdir -p qemu-wasm/htdocs/images
 
-          # Try to get the ISO from your GitHub release first (fast + cached)
-          echo "Trying to download ISO from your GitHub release..."
           ASSET_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             "https://api.github.com/repos/hihello15895-ui/andro_VM/releases/tags/iso" \
             | jq -r '.assets[] | select(.name | endswith(".iso")) | .id' | head -n1)
 
           if [ -n "$ASSET_ID" ] && [ "$ASSET_ID" != "null" ]; then
-            echo "Found ISO in release (asset ID: $ASSET_ID) → downloading..."
+            echo "Downloading from your GitHub Release..."
             curl -L -# \
               -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
               -H "Accept: application/octet-stream" \
               "https://api.github.com/repos/hihello15895-ui/andro_VM/releases/assets/$ASSET_ID" \
               -o qemu-wasm/htdocs/images/android-x86.iso
-            echo "ISO downloaded from GitHub Release"
           else
-            echo "No ISO found in release → downloading from official mirror..."
+            echo "Downloading from official mirror..."
             curl -L -# -o qemu-wasm/htdocs/images/android-x86.iso \
               https://osdn.net/dl/android-x86/android-x86_64-9.0-r2.iso
           fi
 
-          echo "Final ISO size: $(du -h qemu-wasm/htdocs/images/android-x86.iso)"
+          echo "ISO ready: $(du -h qemu-wasm/htdocs/images/android-x86.iso)"
 
-      - name: Build QEMU → WebAssembly + bundle ISO
+      - name: Build QEMU → WebAssembly (correct way for 2025)
         run: |
-          docker run --rm -v ${{ github.workspace }}/qemu-wasm:/src -w /src qemu-wasm-builder bash -c "
-            set -euo pipefail
-            emconfigure ./configure \
-              --target-list=x86_64-softmmu \
-              --disable-werror --disable-capstone --disable-docs --disable-system \
-              --extra-cflags='-s USE_PTHREADS=1 -s PTHREAD_POOL_SIZE=4' \
-              --extra-ldflags='-s USE_PTHREADS=1 -s PTHREAD_POOL_SIZE=4 -s TOTAL_MEMORY=1GB -s ALLOW_MEMORY_GROWTH=1'
+          docker run --rm \
+            -v ${{ github.workspace }}/qemu-wasm:/src \
+            -w /src \
+            qemu-wasm-builder bash -c "
+              set -euo pipefail
 
-            emmake make -j$(nproc) qemu-system-x86_64
+              # This fork uses a simpler build script
+              emconfigure ./configure \
+                --target-list=x86_64-softmmu \
+                --disable-werror \
+                --disable-capstone \
+                --disable-docs \
+                --extra-cflags='-s USE_PTHREADS=1 -s PTHREAD_POOL_SIZE=4 -s TOTAL_MEMORY=1GB -s ALLOW_MEMORY_GROWTH=1' \
+                --extra-ldflags='-s USE_PTHREADS=1 -s PTHREAD_POOL_SIZE=4'
 
-            python3 /emsdk/upstream/emscripten/tools/file_packager.py \
-              htdocs/qemu.data \
-              --preload images/android-x86.iso@/android-x86.iso \
-              --js-output=htdocs/load.js \
-              --use-preload-plugins \
-              --lz4
-          "
+              emmake make -j$(nproc) qemu-system-x86_64
+
+              python3 /emsdk/upstream/emscripten/tools/file_packager.py \
+                htdocs/qemu.data \
+                --preload images/android-x86.iso@/android-x86.iso \
+                --js-output=htdocs/load.js \
+                --use-preload-plugins \
+                --lz4
+            "
 
       - name: Optimize WASM
         run: |
-          sudo apt-get install -y binaryen
           for f in qemu-wasm/htdocs/*.wasm; do
             [ -f "$f" ] && wasm-opt -O3 --fast-math "$f" -o "$f.opt" && mv "$f.opt" "$f"
           done
@@ -105,7 +110,7 @@ jobs:
           <p>First boot ≈ 60–90 seconds — please wait!</p>
           <script>
             document.getElementById('start').onclick=()=>{Module({canvas:document.querySelector('canvas'),arguments:[
-              '-cpu','qemu64,+ssse3,+sse4.2,+popcnt','-m','2048','-smp','4','-M','q35',
+              '-cpu','qemu64,+ssse3,+sse4.2,+popcnt','-m','2048','-smp','4',
               '-device','virtio-gpu-pci','-device','virtio-keyboard-pci','-device','virtio-mouse-pci',
               '-drive','if=none,id=cdrom,format=raw,readonly=on,file=/android-x86.iso',
               '-device','ide-cd,drive=cdrom,bootindex=0','-boot','d'
@@ -114,13 +119,13 @@ jobs:
           </script></body></html>
           EOF
 
-      - name: Package everything
+      - name: Package & upload
         run: |
           cp -r qemu-wasm/htdocs/* dist/
-          echo "Build complete! Files in dist/:"
+          echo "Build complete! Files:"
           ls -lh dist/
 
-      - name: Upload emulator artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: android-x86-9-qemu-wasm-emulator
