@@ -1,5 +1,4 @@
-name: Android-x86 WebAssembly Emulator (v86)
-
+name: Android-x86 QEMU WebAssembly Emulator
 on:
   push:
     branches: [ main, master ]
@@ -21,180 +20,114 @@ jobs:
     env:
       DOWNLOAD_ISO: ${{ github.event.inputs.download_iso }}
       USE_TEST_ISO: ${{ github.event.inputs.use_test_iso }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Emscripten
-        uses: mymindstorm/setup-emsdk@v14
-        with:
-          version: 3.1.58
-
-      - name: Install tools
+      - name: Install Docker (for QEMU build)
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y git make binaryen wget curl ca-certificates \
-            clang build-essential default-jre-headless python3 python3-pip cmake pkg-config
+          sudo apt-get update
+          sudo apt-get install -y docker.io
+          sudo service docker start
+          sudo usermod -aG docker $USER
+          # Wait for group to apply
+          newgrp docker
 
-      - name: Clone v86
+      - name: Clone qemu-wasm
         run: |
-          git clone --depth 1 https://github.com/copy/v86.git
-          cd v86 && git submodule update --init --recursive
+          git clone --depth 1 --recursive https://github.com/ktock/qemu-wasm.git
+          cd qemu-wasm
+
+      - name: Build QEMU WASM Docker image
+        run: |
+          cd qemu-wasm
+          docker build -t buildqemu - < Dockerfile
 
       - name: Download Android-x86 ISO (robust)
         run: |
           set -eo pipefail
           DOWNLOAD_ISO="${DOWNLOAD_ISO:-false}"
           USE_TEST_ISO="${USE_TEST_ISO:-false}"
-          mkdir -p v86/images
-          cd v86/images
+          mkdir -p qemu-wasm/htdocs/images
+          cd qemu-wasm/htdocs/images
           URL="https://osdn.net/dl/android-x86/android-x86_64-4.4-r5.iso"
-          # Set a user agent to avoid being blocked by some servers
           UA="Mozilla/5.0 (compatible; GitHub-Action; +https://github.com)"
           echo "Downloading Android-x86 ISO from: $URL"
-          # If DOWNLOAD_ISO is false, check local files and skip download if present
           if [ "${DOWNLOAD_ISO}" = "false" ]; then
             if [ -f ../../android-x86.iso ]; then
-              echo "Found android-x86.iso in repository root; copying to v86/images"
               cp ../../android-x86.iso ./android-x86.iso
             elif [ -f ../../android-x86_64-4.4-r5.iso ]; then
-              echo "Found android-x86_64-4.4-r5.iso in repository root; copying to v86/images"
               cp ../../android-x86_64-4.4-r5.iso ./android-x86.iso
             elif ls ../../*android*.iso >/dev/null 2>&1; then
               SRC_ISO=$(ls ../../*android*.iso | head -n1)
-              echo "Found $SRC_ISO in repository root; copying to v86/images"
               cp "$SRC_ISO" ./android-x86.iso
             elif [ -f ../../dist/android-x86.iso ]; then
-              echo "Found dist/android-x86.iso; copying to v86/images"
               cp ../../dist/android-x86.iso ./android-x86.iso
             elif [ -f ./android-x86.iso ]; then
-              echo "android-x86.iso already present in v86/images; skipping download"
+              echo "android-x86.iso already present; skipping download"
             else
               echo "DOWNLOAD_ISO=false and no existing ISO found; skipping download step"
               exit 0
             fi
           fi
-
-          # Prefer wget if available, but use fallback to curl. Keep verbose logs for diagnostics
-            if command -v wget >/dev/null 2>&1; then
+          if command -v wget >/dev/null 2>&1; then
             wget --user-agent="$UA" --continue --tries=8 --retry-connrefused --waitretry=5 --timeout=30 --show-progress -O android-x86.iso "$URL" || WGET_EXIT=$? || true
           else
-            echo "wget not found, trying curl..."
             WGET_EXIT=1
           fi
           if [ "${WGET_EXIT:-0}" != "0" ]; then
-            echo "wget failed (exit=${WGET_EXIT:-0}), trying curl as fallback..."
-            # curl --fail causes non-zero exit on HTTP 4xx/5xx
-              if command -v curl >/dev/null 2>&1; then
-              curl -A "$UA" -L --retry 8 --retry-delay 5 --max-time 120 --fail -o android-x86.iso "$URL"
-            else
-              echo "curl not available" >&2
-              exit 1
-            fi
+            echo "wget failed, trying curl..."
+            curl -A "$UA" -L --retry 8 --retry-delay 5 --max-time 120 --fail -o android-x86.iso "$URL"
           fi
-          # Verify we've got a reasonably-sized file and show diagnostics
           if [ ! -f android-x86.iso ]; then
-            echo "ISO download failed: file not found" >&2
+            echo "ISO download failed: file not found"
             if [ "${USE_TEST_ISO:-false}" = "true" ]; then
-              echo "USE_TEST_ISO=true; creating small test image instead of real ISO"
+              echo "USE_TEST_ISO=true; creating small test image"
               dd if=/dev/zero of=android-x86.iso bs=1024 count=1024
             else
               exit 1
             fi
           fi
-          echo "Downloaded file size:" $(stat -c%s android-x86.iso) "bytes"
-          # Optional: print first bytes only (hexdump) and compute sha256 for traceability
+          echo "Downloaded file size: $(stat -c%s android-x86.iso) bytes"
           if command -v sha256sum >/dev/null 2>&1; then
             echo "SHA256: $(sha256sum android-x86.iso | awk '{print $1}')"
           fi
 
-      - name: Setup Rust toolchain (optional)
+      - name: Build QEMU x86_64 WASM (in Docker)
         run: |
-          set -eo pipefail
-          # Install rustup if not present (non-interactive)
-          if ! command -v rustc >/dev/null 2>&1; then
-            curl https://sh.rustup.rs -sSf | sh -s -- -y
-            export PATH="$HOME/.cargo/bin:$PATH"
-          fi
-          rustup default stable || true
-          rustup component add rust-src || true
-          rustup target add wasm32-unknown-unknown || true
-
-      - name: Build v86 (robust)
-        run: |
-          set -eo pipefail
-          cd v86
-          echo "Listing top Makefile targets (may be noisy):"
-          if [ -f Makefile ]; then
-            awk -F: '/^[a-zA-Z0-9_\.-]+:/ {print $1}' Makefile | sed 's/\s.*$//' | sort -u | xargs echo || true
-          fi
-
-          # Try a list of common targets; break if any succeeds
-          # Prioritize build/ prefixed targets as per the Makefile
-          TARGETS=(build/libv86.js build/v86_all.js build/v86.wasm build/libv86.mjs build/libv86-debug.js build/v86-debug.wasm build/libv86.js v86.js libv86 v86 all dist)
-          for t in "${TARGETS[@]}"; do
-            echo "Trying target: $t"
-            if emmake make -j$(nproc) "$t"; then
-              echo "Build succeeded for target: $t"
-              break
-            else
-              echo "Target $t failed; trying next..."
-            fi
-          done
-
-          # If no expected JS or WASM files produced in v86 root, check build/ directory
-          if [ -z "$(ls *.js 2>/dev/null)" ] && [ -z "$(ls *.wasm 2>/dev/null)" ]; then
-            echo "No js/wasm produced by Make; running 'make' with default target"
-            emmake make -j$(nproc) || true
-          fi
-          # If still not, check build/ artifacts (v86 uses build/* outputs)
-          if [ -z "$(ls *.js 2>/dev/null)" ] && [ -z "$(ls *.wasm 2>/dev/null)" ] && [ -z "$(ls build/*.js 2>/dev/null)" ] && [ -z "$(ls build/*.wasm 2>/dev/null)" ]; then
-            echo "Still no build artifacts; trying npm build as fallback"
-            if [ -f package.json ]; then
-              npm ci || npm install || true
-              npm run build || true
-            fi
-          fi
-          echo 'Produced JS: ' $(ls *.js 2>/dev/null || true) $(ls build/*.js 2>/dev/null || true)
-          echo 'Produced WASM: ' $(ls *.wasm 2>/dev/null || true) $(ls build/*.wasm 2>/dev/null || true)
-          echo 'Build directory contents:'
-          ls -la || true
-          # Ensure at least one artifact exists (either in root or build/ dir)
-          if [ -z "$(ls *.js 2>/dev/null)" ] && [ -z "$(ls *.wasm 2>/dev/null)" ] && [ -z "$(ls build/*.js 2>/dev/null)" ] && [ -z "$(ls build/*.wasm 2>/dev/null)" ]; then
-            echo "Build failed: no .js or .wasm artifacts found in v86/" >&2
-            exit 2
-          fi
-
-        
-
-      # This is the ONLY safe way to do WASM optimization in GitHub Actions
-      
-
-      - name: Package everything
-        run: |
-          mkdir -p dist
-          # Copy any produced JS and WASM artifacts to dist/
-          cp v86/*.js dist/ 2>/dev/null || true
-          cp v86/*.wasm dist/ 2>/dev/null || true
-          cp v86/build/*.js dist/ 2>/dev/null || true
-          cp v86/build/*.mjs dist/ 2>/dev/null || true
-          cp v86/build/*.wasm dist/ 2>/dev/null || true
-          cp v86/images/android-x86.iso dist/ 2>/dev/null || true
-          echo 'dist contents:' && ls -la dist || true
+          cd qemu-wasm
+          # Run container, build qemu-system-x86_64 with browser flags
+          docker run --rm -v $(pwd):/work -w /work buildqemu bash -c "
+            emconfigure ./configure --target-list=x86_64-softmmu --disable-system --disable-slirp --disable-virtfs --disable-vhost-net --disable-vhost-vsock --disable-vhost-user --disable-vhost-crypto --disable-vhost-vdpa --disable-docs --disable-tools --disable-guest-agent --disable-fdt --disable-libiscsi --disable-vte --disable-vnc-sasl --disable-gnutls --disable-gcrypt --disable-nettle --disable-curl --disable-spice --disable-vnc --disable-sdl --disable-gtk --disable-vte --disable-opengl --disable-virglrenderer --disable-cocoa --disable-hvf --disable-xen --disable-brlapi --disable-fdt --disable-libxml2 --disable-zstd --disable-bzip2 --disable-lzo --disable-snappy --disable-libssh --disable-qom-cast-debug --disable-capstone --disable-cap-ng --disable-attr --disable-xkbcommon --disable-alsa --disable-oss --disable-pa --disable-sndio --disable-jack --disable-pulseaudio --disable-bluez --disable-virglrenderer --disable-vhost-kernel --disable-vhost-user --disable-vhost-net --disable-vhost-vdpa --disable-vhost-vsock --disable-vhost-crypto --disable-tpm --disable-pvrdma --disable-xen --disable-hax --disable-hvf --disable-whpx --disable-kvm --disable-werror
+            emmake make -j$(nproc) qemu-system-x86_64
+            # Package for browser (adjust paths as needed)
+            python3 /emsdk/upstream/emscripten/tools/file_packager.py htdocs/qemu.data --preload images/android-x86.iso --js-output=htdocs/load.js --no-heap-copy
+          "
 
       - name: Optimize WASM files
         run: |
-          # Optimize any wasm files in dist/ (packaged outputs)
-          bash -c 'for f in dist/*.wasm; do [ -f "$f" ] && wasm-opt -O4 --strip "$f" -o "$f.opt" && mv "$f.opt" "$f" || true; done'
+          cd qemu-wasm/htdocs
+          if command -v wasm-opt >/dev/null 2>&1; then
+            for f in *.wasm; do [ -f "$f" ] && wasm-opt -O4 --strip "$f" -o "$f.opt" && mv "$f.opt" "$f"; done
+          fi
+          echo "WASM files: $(ls *.wasm 2>/dev/null || echo 'None')"
+          echo "JS files: $(ls *.js 2>/dev/null || echo 'None')"
 
-      - name: Create demo page
+      - name: Package everything to dist
         run: |
           mkdir -p dist
-            echo 'PCFET0NUWVBFIGh0bWw+CjxodG1sPgo8aGVhZD4KICA8bWV0YSBjaGFyc2V0PSJ1dGYtOCI+CiAgPHRpdGxlPkFuZHJvaWQteDg2IGluIEJyb3dzZXI8L3RpdGxlPgo8L2hlYWQ+Cjxib2R5PgogIDxoMT5BbmRyb2lkLXg4NiBXZWJBc3NlbWJseSBFbXVsYXRvcjwvaDE+CiAgPGRpdiBpZD0ic2NyZWVuIj48Y2FudmFzPjwvY2FudmFzPjwvZGl2PgogIDxidXR0b24gaWQ9InN0YXJ0Ij5TdGFydCBBbmRyb2lkPC9idXR0b24+CiAgPGJ1dHRvbiBpZD0ic3RvcCIgZGlzYWJsZWQ+U3RvcDwvYnV0dG9uPgogIDxwPkJvb3QgdGFrZXMgMeKAkzIgbWludXRlcy4gQmUgcGF0aWVudCE8L3A+CiAgPHNjcmlwdCB0eXBlPSJtb2R1bGUiPgogICAgaW1wb3J0IHtWODZ9IGZyb20gJy4vbGlidjg2LmpzJzsKICAgIGNvbnN0IGVtdSA9IG5ldyBWODYoewogICAgICBzY3JlZW5fY29udGFpbmVyOiBkb2N1bWVudC5nZXRFbGVtZW50QnlJZCgnc2NyZWVuJyksCiAgICAgIHdhc21fdXJsOiAnLi92ODYud2FzbScsCiAgICAgIG1lbW9yeV9zaXplOiA1MTIqMTAyNCoxMDI0LAogICAgICB2Z2FfbWVtb3J5X3NpemU6IDgqMTAyNCoxMDI0LAogICAgICBhdXRvc3RhcnQ6IGZhbHNlCiAgICB9KTsKICAgIGF3YWl0IG5ldyBQcm9taXNlKHIgPT4gZW11LmFkZF9saXN0ZW5lcignZW11bGF0b3ItcmVhZHknLCByKSk7CiAgICBkb2N1bWVudC5nZXRFbGVtZW50QnlJZCgnc3RhcnQnKS5vbmNsaWNrID0gKCkgPT4geyBlbXUucnVuKCk7IGRvY3VtZW50LmdldEVsZW1lbnRCeUlkKCdzdGFydCcpLmRpc2FibGVkID0gdHJ1ZTsgZG9jdW1lbnQuZ2V0RWxlbWVudEJ5SWQoJ3N0b3AnKS5kaXNhYmxlZCA9IGZhbHNlOyB9OwogICAgZG9jdW1lbnQuZ2V0RWxlbWVudEJ5SWQoJ3N0b3AnKS5vbmNsaWNrID0gKCkgPT4geyBlbXUuc3RvcCgpOyBkb2N1bWVudC5nZXRFbGVtZW50QnlJZCgnc3RhcnQnKS5kaXNhYmxlZCA9IGZhbHNlOyBkb2N1bWVudC5nZXRFbGVtZW50QnlJZCgnc3RvcCcpLmRpc2FibGVkID0gdHJ1ZTsKICAgPC9zY3JpcHQ+CjwvYm9keT4KPC9odG1sPg==' | base64 --decode > dist/index.html
+          cp -r qemu-wasm/htdocs/* dist/ 2>/dev/null || true
+          echo 'dist contents:' && ls -la dist || true
+
+      - name: Create demo page (QEMU loader)
+        run: |
+          mkdir -p dist
+          # Base64-encoded HTML with QEMU loader (adapt from ktock examples; loads WASM and boots ISO via cmdline)
+          echo 'PCFET0NUWVBFIGh0bWw+CjxodG1sPgo8aGVhZD4KICA8bWV0YSBjaGFyc2V0PSJ1dGYtOCI+CiAgPHRpdGxlPkFuZHJvaWQtWHg4NiBRRU1VIEdsb2JhbCBFbXVsYXRvcjwvdGl0bGU+CiAgPHNjcmlwdCBzcmM9Ii4vbG9hZC5qcyI+PC9zY3JpcHQ+CjwvaGVhZD4KPGJvZHk+CiAgPGgxPkFuZHJvaWQtWHg4NiBRRU1VIEdsb2JhbCBFbXVsYXRvcjwvaDE+CiAgPGRpdiBpZD0ic2NyZWVuIj48Y2FudmFzPjwvY2FudmFzPjwvZGl2PgogIDxidXR0b24gaWQ9InN0YXJ0Ij5TdGFydCBBbmRyb2lkPC9idXR0b24+CiAgPGJ1dHRvbiBpZD0ic3RvcCIgZGlzYWJsZWQ+U3RvcDwvYnV0dG9uPgogIDxwPkJvb3QgdGFrZXMgMS0yIG1pbnV0ZXMuIEJlIHBhdGllbnQhPC9wPgogIDxzY3JpcHQ+CiAgICBkb2N1bWVudC5nZXRFbGVtZW50QnlJZCgnc3RhcnQnKS5vbmNsaWNrID0gKCkgPT4gewogICAgICBtb2R1bGUuZGVmYXVsdCh7CiAgICAgICAgY2FudmFzOiBkb2N1bWVudC5nZXRFbGVtZW50QnlJZCgnc2NyZWVuJyksCiAgICAgICAgY21kX2xpbmU6ICctY2RkIHJvb3QgL21lZGlhL2Nkcm9tIC1ib290IC1tIDEyOCAtc3RhcnQgL2FuZHJvaWQtWC5pc28gLW4gL2FuZHJvaWQtWC5pc28gLWQgL2FuZHJvaWQtWC5pc28gLWQgL3N5cy9pZ25pdC5yYyAtYXBwZW5kICJjb25zb2xlPWFydCZjb25zb2xlX3NjcmVlbj0yNCx4IiAtYXV0by1hYm9ydA==  # QEMU cmdline for Android-x86 boot (base64 encoded for JS)
+ICAgICAgfSk7CiAgICAgIGRvY3VtZW50LmdldEVsZW1lbnRCeUlkKCdzdGFydCcpLmRpc2FibGVkID0gdHJ1ZTsKICAgICAgZG9jdW1lbnQuZ2V0RWxlbWVudEJ5SWQoJ3N0b3AnKS5kaXNhYmxlZCA9IGZhbHNlOwogICAgfTsKICAgIGRvY3VtZW50LmdldEVsZW1lbnRCeUlkKCdzdG9wJykub25jbGljayA9ICgpID0+IHsKICAgICAgbW9kdWxlLnN0b3AoKTsKICAgICAgZG9jdW1lbnQuZ2V0RWxlbWVudEJ5SWQoJ3N0YXJ0JykuZGlzYWJsZWQgPSBmYWxzZTsKICAgICAgZG9jdW1lbnQuZ2V0RWxlbWVudEJ5SWQoJ3N0b3AnKS5kaXNhYmxlZCA9IHRydWU7CiAgICB9OwogIDwvc2NyaXB0Pgo8L2JvZHk+CjwvaHRtbD4K' | base64 --decode > dist/index.html
 
       - name: Upload result
         uses: actions/upload-artifact@v4
         with:
-          name: android-x86-web-emulator
+          name: android-qemu-wasm-emulator
           path: dist/
