@@ -87,34 +87,4 @@ jobs:
         run: |
           mkdir -p dist
           cat > dist/index.html <<'EOF'
-          <!DOCTYPE html><html><head><meta charset=utf-8><title>Android-x86 9.0 × QEMU/WASM</title>
-          <style>body{margin:0;background:#000;color:#0f0;font-family:system-ui;text-align:center;padding:20px}
-          canvas{max-width:100%;image-rendering:pixelated;border:4px solid #0f0;border-radius:12px}
-          button{font-size:20px;padding:15px 30px;margin:10px;background:#0f0;color:#000;border:none;border-radius:8px;cursor:pointer}</style>
-          <script src="./load.js"></script></head><body>
-          <h1>Android-x86 9.0-r2 running in Browser</h1>
-          <div><canvas></canvas></div>
-          <p><button id=start>Start Android</button> <button id=stop disabled>Stop</button></p>
-          <p>First boot ≈ 60–90 seconds — please wait!</p>
-          <script>
-            document.getElementById('start').onclick=()=>{Module({canvas:document.querySelector('canvas'),arguments:[
-              '-cpu','qemu64,+ssse3,+sse4.2,+popcnt','-m','2048','-smp','4','-M','q35',
-              '-device','virtio-gpu-pci','-device','virtio-keyboard-pci','-device','virtio-mouse-pci',
-              '-drive','if=none,id=cdrom,format=raw,readonly=on,file=/android-x86.iso',
-              '-device','ide-cd,drive=cdrom,bootindex=0','-boot','d'
-            ]});this.disabled=true;document.getElementById('stop').disabled=false};
-            document.getElementById('stop').onclick=()=>{if(Module?.stop)Module.stop();
-              document.getElementById('start').disabled=false;this.disabled=true};
-          </script></body></html>
-          EOF
-
-      - name: Package & upload
-        run: |
-          cp -r qemu-wasm/htdocs/* dist/
-          ls -lh dist/
-
-      - name: Upload emulator artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-x86-9-qemu-wasm-emulator
-          path: dist/
+          <!DOCTYPE html><html><head><meta charset=utf-8><title>Android
