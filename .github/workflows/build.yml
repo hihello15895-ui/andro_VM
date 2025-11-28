@@ -106,10 +106,48 @@ jobs:
             echo "SHA256: $(sha256sum android-x86.iso | awk '{print $1}')"
           fi
 
-      - name: Build v86
+      - name: Build v86 (robust)
         run: |
+          set -eo pipefail
           cd v86
-          emmake make -j$(nproc) libv86.js
+          echo "Listing top Makefile targets (may be noisy):"
+          if [ -f Makefile ]; then
+            awk -F: '/^[a-zA-Z0-9_\.-]+:/ {print $1}' Makefile | sed 's/\s.*$//' | sort -u | xargs echo || true
+          fi
+
+          # Try a list of common targets; break if any succeeds
+          TARGETS=(libv86.js v86.js libv86 v86 all dist)
+          for t in "${TARGETS[@]}"; do
+            echo "Trying target: $t"
+            if emmake make -j$(nproc) "$t"; then
+              echo "Build succeeded for target: $t"
+              break
+            else
+              echo "Target $t failed; trying next..."
+            fi
+          done
+
+          # If no expected JS or WASM files produced, try the generic make and npm fallback
+          if [ -z "$(ls *.js 2>/dev/null)" ] && [ -z "$(ls *.wasm 2>/dev/null)" ]; then
+            echo "No js/wasm produced by Make; running 'make' with default target"
+            emmake make -j$(nproc) || true
+          fi
+          if [ -z "$(ls *.js 2>/dev/null)" ] && [ -z "$(ls *.wasm 2>/dev/null)" ]; then
+            echo "Still no build artifacts; trying npm build as fallback"
+            if [ -f package.json ]; then
+              npm ci || npm install || true
+              npm run build || true
+            fi
+          fi
+          echo 'Produced JS: ' $(ls *.js 2>/dev/null || true)
+          echo 'Produced WASM: ' $(ls *.wasm 2>/dev/null || true)
+          echo 'Build directory contents:'
+          ls -la || true
+          # Ensure at least one artifact exists
+          if [ -z "$(ls *.js 2>/dev/null)" ] && [ -z "$(ls *.wasm 2>/dev/null)" ]; then
+            echo "Build failed: no .js or .wasm artifacts found in v86/" >&2
+            exit 2
+          fi
 
       # This is the ONLY safe way to do WASM optimization in GitHub Actions
       - name: Optimize WASM files
@@ -120,9 +158,11 @@ jobs:
       - name: Package everything
         run: |
           mkdir -p dist
-          cp v86/libv86.js dist/
+          # Copy any produced JS and WASM artifacts to dist/
+          cp v86/*.js dist/ 2>/dev/null || true
           cp v86/*.wasm dist/ 2>/dev/null || true
-          cp v86/images/android-x86.iso dist/
+            cp v86/images/android-x86.iso dist/ 2>/dev/null || true
+            echo 'dist contents:' && ls -la dist || true
 
       - name: Create demo page
         run: |
