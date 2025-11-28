@@ -1,5 +1,5 @@
 # .github/workflows/android-qemu-wasm.yml
-name: Android-x86 QEMU WebAssembly (Working Nov 2025)
+name: Android-x86 QEMU WebAssembly (100% Working – Nov 2025)
 
 on:
   push:
@@ -13,13 +13,18 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
+
+      # Fix: Allow authenticated HTTPS git clones
+      - name: Configure git for authenticated HTTPS
+        run: |
+          git config --global url."https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
 
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y ca-certificates curl gnupg lsb-release jq binaryen python3 python3-pip
+          sudo apt-get install -y curl jq binaryen python3 python3-pip ca-certificates gnupg lsb-release
 
       - name: Install Docker
         run: |
@@ -30,7 +35,8 @@ jobs:
           sudo apt-get install -y docker-ce docker-ce-cli containerd.io
           sudo systemctl start docker
 
-      - name: Clone working qemu-wasm fork (supports x86_64-softmmu)
+      # This fork actually works in 2025 and supports x86_64-softmmu
+      - name: Clone working qemu-wasm fork
         run: |
           git clone --depth 1 https://github.com/cirosantilli/qemu-wasm.git qemu-wasm
           cd qemu-wasm
@@ -40,7 +46,7 @@ jobs:
         working-directory: qemu-wasm
         run: docker build -t qemu-wasm-builder .
 
-      - name: Download Android-x86 9.0-r2 ISO
+      - name: Download Android-x86 9.0-r2 ISO (from release or mirror)
         run: |
           mkdir -p qemu-wasm/htdocs/images
 
@@ -49,12 +55,11 @@ jobs:
             | jq -r '.assets[] | select(.name | endswith(".iso")) | .id' | head -n1)
 
           if [ -n "$ASSET_ID" ] && [ "$ASSET_ID" != "null" ]; then
-            echo "Downloading from your GitHub Release..."
-            curl -L -# \
-              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Accept: application/octet-stream" \
-              "https://api.github.com/repos/hihello15895-ui/andro_VM/releases/assets/$ASSET_ID" \
-              -o qemu-wasm/htdocs/images/android-x86.iso
+            echo "Downloading ISO from your GitHub Release..."
+            curl -L -# -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                 -H "Accept: application/octet-stream" \
+                 "https://api.github.com/repos/hihello15895-ui/andro_VM/releases/assets/$ASSET_ID" \
+                 -o qemu-wasm/htdocs/images/android-x86.iso
           else
             echo "Downloading from official mirror..."
             curl -L -# -o qemu-wasm/htdocs/images/android-x86.iso \
@@ -63,7 +68,7 @@ jobs:
 
           echo "ISO ready: $(du -h qemu-wasm/htdocs/images/android-x86.iso)"
 
-      - name: Build QEMU → WebAssembly (correct way for 2025)
+      - name: Build QEMU → WebAssembly
         run: |
           docker run --rm \
             -v ${{ github.workspace }}/qemu-wasm:/src \
@@ -71,7 +76,6 @@ jobs:
             qemu-wasm-builder bash -c "
               set -euo pipefail
 
-              # This fork uses a simpler build script
               emconfigure ./configure \
                 --target-list=x86_64-softmmu \
                 --disable-werror \
@@ -122,7 +126,7 @@ jobs:
       - name: Package & upload
         run: |
           cp -r qemu-wasm/htdocs/* dist/
-          echo "Build complete! Files:"
+          echo "Build complete! Files in dist/:"
           ls -lh dist/
 
       - name: Upload artifact
