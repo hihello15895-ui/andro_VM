@@ -53,52 +53,8 @@ jobs:
 
       - name: Create demo page
         run: |
-          cat > dist/index.html << 'EOF'
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Android-x86 in Browser</title>
-  <style>
-    body{margin:0;background:#111;color:#fff;font-family:sans-serif;text-align:center;padding:20px}
-    #phone{width:400px;height:820px;margin:30px auto;border:20px solid #222;border-radius:45px;overflow:hidden;background:#000;box-shadow:0 20px 60px #0008}
-    canvas{width:100%;height:100%;display:block}
-    button{margin:10px;padding:15px 30px;font-size:18px;background:#0066ff;color:white;border:none;border-radius:12px;cursor:pointer}
-    button:disabled{background:#444;cursor:not-allowed}
-  </style>
-</head>
-<body>
-  <h1>Android-x86 WebAssembly Emulator</h1>
-  <div id="phone"><div id="screen"><canvas></canvas></div></div>
-  <button id="start">Start Android</button>
-  <button id="stop" disabled>Stop</button>
-  <p>Boot takes 1–2 minutes. Be patient!</p>
-
-  <script type="module">
-    import {V86} from "./libv86.js";
-    const emu = new V86({
-      screen_container: document.getElementById("screen"),
-      wasm_url: "./v86.wasm",
-      memory_size: 512*1024*1024,
-      vga_memory_size: 8*1024*1024,
-      autostart: false
-    });
-    await new Promise(r => emu.add_listener("emulator-ready", r));
-
-    document.getElementById("start").onclick = () => {
-      emu.run();
-      document.getElementById("start").disabled = true;
-      document.getElementById("stop").disabled = false;
-    };
-    document.getElementById("stop").onclick = () => {
-      emu.stop();
-      document.getElementById("start").disabled = false;
-      document.getElementById("stop").disabled = true;
-    };
-  </script>
-</body>
-</html>
-EOF
+          mkdir -p dist
+            echo 'PCFET0NUWVBFIGh0bWw+CjxodG1sPgo8aGVhZD4KICA8bWV0YSBjaGFyc2V0PSJ1dGYtOCI+CiAgPHRpdGxlPkFuZHJvaWQteDg2IGluIEJyb3dzZXI8L3RpdGxlPgo8L2hlYWQ+Cjxib2R5PgogIDxoMT5BbmRyb2lkLXg4NiBXZWJBc3NlbWJseSBFbXVsYXRvcjwvaDE+CiAgPGRpdiBpZD0ic2NyZWVuIj48Y2FudmFzPjwvY2FudmFzPjwvZGl2PgogIDxidXR0b24gaWQ9InN0YXJ0Ij5TdGFydCBBbmRyb2lkPC9idXR0b24+CiAgPGJ1dHRvbiBpZD0ic3RvcCIgZGlzYWJsZWQ+U3RvcDwvYnV0dG9uPgogIDxwPkJvb3QgdGFrZXMgMeKAkzIgbWludXRlcy4gQmUgcGF0aWVudCE8L3A+CiAgPHNjcmlwdCB0eXBlPSJtb2R1bGUiPgogICAgaW1wb3J0IHtWODZ9IGZyb20gJy4vbGlidjg2LmpzJzsKICAgIGNvbnN0IGVtdSA9IG5ldyBWODYoewogICAgICBzY3JlZW5fY29udGFpbmVyOiBkb2N1bWVudC5nZXRFbGVtZW50QnlJZCgnc2NyZWVuJyksCiAgICAgIHdhc21fdXJsOiAnLi92ODYud2FzbScsCiAgICAgIG1lbW9yeV9zaXplOiA1MTIqMTAyNCoxMDI0LAogICAgICB2Z2FfbWVtb3J5X3NpemU6IDgqMTAyNCoxMDI0LAogICAgICBhdXRvc3RhcnQ6IGZhbHNlCiAgICB9KTsKICAgIGF3YWl0IG5ldyBQcm9taXNlKHIgPT4gZW11LmFkZF9saXN0ZW5lcignZW11bGF0b3ItcmVhZHknLCByKSk7CiAgICBkb2N1bWVudC5nZXRFbGVtZW50QnlJZCgnc3RhcnQnKS5vbmNsaWNrID0gKCkgPT4geyBlbXUucnVuKCk7IGRvY3VtZW50LmdldEVsZW1lbnRCeUlkKCdzdGFydCcpLmRpc2FibGVkID0gdHJ1ZTsgZG9jdW1lbnQuZ2V0RWxlbWVudEJ5SWQoJ3N0b3AnKS5kaXNhYmxlZCA9IGZhbHNlOyB9OwogICAgZG9jdW1lbnQuZ2V0RWxlbWVudEJ5SWQoJ3N0b3AnKS5vbmNsaWNrID0gKCkgPT4geyBlbXUuc3RvcCgpOyBkb2N1bWVudC5nZXRFbGVtZW50QnlJZCgnc3RhcnQnKS5kaXNhYmxlZCA9IGZhbHNlOyBkb2N1bWVudC5nZXRFbGVtZW50QnlJZCgnc3RvcCcpLmRpc2FibGVkID0gdHJ1ZTsKICAgPC9zY3JpcHQ+CjwvYm9keT4KPC9odG1sPg==' | base64 --decode > dist/index.html
 
       - name: Upload result
         uses: actions/upload-artifact@v4
