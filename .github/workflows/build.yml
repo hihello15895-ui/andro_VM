@@ -79,31 +79,34 @@ jobs:
           '
 
           # Generate JavaScript wrapper with proper output
-          docker exec qb sh -c '
-            echo "Generating JavaScript wrapper..."
+          docker exec qb bash -c "
+            echo \"Generating JavaScript wrapper...\"
             cd /qemu/build || cd /qemu
 
             # Find the compiled .wasm file
-            WASM_FILE=$(find . -name "*.wasm" -type f | head -n1)
+            WASM_FILE=\$(find . -name \"*.wasm\" -type f | head -n1)
 
-            if [ -f "$WASM_FILE" ]; then
-              echo "Found WASM: $WASM_FILE"
+            if [ -f \"\$WASM_FILE\" ]; then
+              echo \"Found WASM: \$WASM_FILE\"
 
               # Create JavaScript loader
-              cat > /qemu/htdocs/qemu-system-x86_64.js << "JSEOF"
-              var Module = {};
-              Module.preRun = [];
-              Module.postRun = [];
-              JSEOF
+              cat > /qemu/htdocs/qemu-system-x86_64.js << 'JSEOF'
+var Module = {};
+Module.preRun = [];
+Module.postRun = [];
+JSEOF
 
               # Copy WASM file
-              cp "$WASM_FILE" /qemu/htdocs/qemu-system-x86_64.wasm
-              echo "✓ WASM file copied"
+              cp \"\$WASM_FILE\" /qemu/htdocs/qemu-system-x86_64.wasm
+              echo \"✓ WASM file copied\"
+            else
+              echo \"ERROR: WASM file not found\"
+              exit 1
             fi
 
-            echo "Files in htdocs before bundling:"
+            echo \"Files in htdocs before bundling:\"
             ls -lh /qemu/htdocs/
-          '
+          "
 
           # Bundle ISO
           docker exec qb python3 /emsdk/upstream/emscripten/tools/file_packager.py \
