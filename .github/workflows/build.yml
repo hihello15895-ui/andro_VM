@@ -1,5 +1,5 @@
 # .github/workflows/android-qemu-wasm.yml
-name: Android-x86 QEMU WebAssembly (Fixed Build – Nov 2025)
+name: Android-x86 QEMU WebAssembly (Working Nov 2025)
 
 on:
   push:
@@ -38,7 +38,6 @@ jobs:
         run: |
           git clone --depth 1 --shallow-submodules https://github.com/ktock/qemu-wasm.git
           cd qemu-wasm
-          # Skip edk2 and other broken submodules; only init essential ones
           git submodule update --init --depth 1 roms/seabios roms/ipxe roms/openbios || true
 
       - name: Build Docker image
@@ -67,7 +66,7 @@ jobs:
 
           echo "ISO ready: $(du -h qemu-wasm/htdocs/images/android-x86.iso)"
 
-      - name: Build QEMU → WebAssembly (fixed configure first)
+      - name: Build QEMU → WebAssembly (minimal working configure)
         run: |
           docker run --rm \
             -v ${{ github.workspace }}/qemu-wasm:/src \
@@ -75,20 +74,14 @@ jobs:
             qemu-wasm-builder bash -c "
               set -euo pipefail
 
-              # Run configure FIRST (required before make)
               emconfigure ./configure \
                 --target-list=x86_64-softmmu \
                 --disable-werror \
                 --disable-capstone \
                 --disable-docs \
-                --disable-edk2 \
-                --disable-pie \
-                --disable-stack-protector \
-                --disable-system \
                 --extra-cflags='-s USE_PTHREADS=1 -s PTHREAD_POOL_SIZE=4 -s TOTAL_MEMORY=1GB -s ALLOW_MEMORY_GROWTH=1' \
                 --extra-ldflags='-s USE_PTHREADS=1 -s PTHREAD_POOL_SIZE=4'
 
-              # Now run make
               emmake make -j$(nproc) qemu-system-x86_64
 
               python3 /emsdk/upstream/emscripten/tools/file_packager.py \
