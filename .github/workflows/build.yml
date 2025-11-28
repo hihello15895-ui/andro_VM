@@ -9,7 +9,7 @@ on:
       download_iso:
         description: 'Whether to download the Android-x86 ISO (true/false)'
         required: false
-        default: 'true'
+        default: 'false'
       use_test_iso:
         description: 'If download fails, use a small test image instead (true/false)'
         required: false
@@ -19,8 +19,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      DOWNLOAD_ISO: ${{ github.event.inputs.download_iso || 'true' }}
-      USE_TEST_ISO: ${{ github.event.inputs.use_test_iso || 'false' }}
+      DOWNLOAD_ISO: ${{ github.event.inputs.download_iso }}
+      USE_TEST_ISO: ${{ github.event.inputs.use_test_iso }}
 
     steps:
       - name: Checkout
@@ -40,15 +40,39 @@ jobs:
           cd v86 && git submodule update --init --recursive
 
       - name: Download Android-x86 ISO (robust)
-        if: ${{ env.DOWNLOAD_ISO != 'false' }}
         run: |
-          set -euo pipefail
+          set -eo pipefail
+          DOWNLOAD_ISO="${DOWNLOAD_ISO:-false}"
+          USE_TEST_ISO="${USE_TEST_ISO:-false}"
           mkdir -p v86/images
           cd v86/images
           URL="https://osdn.net/dl/android-x86/android-x86_64-4.4-r5.iso"
           # Set a user agent to avoid being blocked by some servers
           UA="Mozilla/5.0 (compatible; GitHub-Action; +https://github.com)"
           echo "Downloading Android-x86 ISO from: $URL"
+          # If DOWNLOAD_ISO is false, check local files and skip download if present
+          if [ "${DOWNLOAD_ISO}" = "false" ]; then
+            if [ -f ../../android-x86.iso ]; then
+              echo "Found android-x86.iso in repository root; copying to v86/images"
+              cp ../../android-x86.iso ./android-x86.iso
+            elif [ -f ../../android-x86_64-4.4-r5.iso ]; then
+              echo "Found android-x86_64-4.4-r5.iso in repository root; copying to v86/images"
+              cp ../../android-x86_64-4.4-r5.iso ./android-x86.iso
+            elif ls ../../*android*.iso >/dev/null 2>&1; then
+              SRC_ISO=$(ls ../../*android*.iso | head -n1)
+              echo "Found $SRC_ISO in repository root; copying to v86/images"
+              cp "$SRC_ISO" ./android-x86.iso
+            elif [ -f ../../dist/android-x86.iso ]; then
+              echo "Found dist/android-x86.iso; copying to v86/images"
+              cp ../../dist/android-x86.iso ./android-x86.iso
+            elif [ -f ./android-x86.iso ]; then
+              echo "android-x86.iso already present in v86/images; skipping download"
+            else
+              echo "DOWNLOAD_ISO=false and no existing ISO found; skipping download step"
+              exit 0
+            fi
+          fi
+
           # Prefer wget if available, but use fallback to curl. Keep verbose logs for diagnostics
             if command -v wget >/dev/null 2>&1; then
             wget --user-agent="$UA" --continue --tries=8 --retry-connrefused --waitretry=5 --timeout=30 --show-progress -O android-x86.iso "$URL" || WGET_EXIT=$? || true
