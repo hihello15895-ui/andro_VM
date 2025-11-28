@@ -5,10 +5,22 @@ on:
     branches: [ main, master ]
   pull_request:
   workflow_dispatch:
+    inputs:
+      download_iso:
+        description: 'Whether to download the Android-x86 ISO (true/false)'
+        required: false
+        default: 'true'
+      use_test_iso:
+        description: 'If download fails, use a small test image instead (true/false)'
+        required: false
+        default: 'false'
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      DOWNLOAD_ISO: ${{ github.event.inputs.download_iso || 'true' }}
+      USE_TEST_ISO: ${{ github.event.inputs.use_test_iso || 'false' }}
 
     steps:
       - name: Checkout
@@ -28,6 +40,7 @@ jobs:
           cd v86 && git submodule update --init --recursive
 
       - name: Download Android-x86 ISO (robust)
+        if: ${{ env.DOWNLOAD_ISO != 'false' }}
         run: |
           set -euo pipefail
           mkdir -p v86/images
@@ -56,7 +69,12 @@ jobs:
           # Verify we've got a reasonably-sized file and show diagnostics
           if [ ! -f android-x86.iso ]; then
             echo "ISO download failed: file not found" >&2
-            exit 1
+            if [ "${USE_TEST_ISO:-false}" = "true" ]; then
+              echo "USE_TEST_ISO=true; creating small test image instead of real ISO"
+              dd if=/dev/zero of=android-x86.iso bs=1024 count=1024
+            else
+              exit 1
+            fi
           fi
           echo "Downloaded file size:" $(stat -c%s android-x86.iso) "bytes"
           # Optional: print first bytes only (hexdump) and compute sha256 for traceability
