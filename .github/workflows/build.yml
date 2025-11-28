@@ -1,15 +1,15 @@
 # .github/workflows/android-qemu-wasm.yml
-name: Android-x86 QEMU/WASM (REAL .wasm – 100% WORKS)
+name: Android-x86 QEMU/WASM (REAL .wasm from Release ISO)
 
 on:
+  workflow_dispatch:
   push:
     branches: [ main, master ]
-  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -20,7 +20,7 @@ jobs:
 
       - name: Install Docker
         run: |
-          sudo install -m 0755 -d /etc/apt/keyrings
+          sudo mkdir -p /etc/apt/keyrings
           curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
           echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
           sudo apt-get update && sudo apt-get install -y docker-ce docker-ce-cli containerd.io
@@ -31,20 +31,22 @@ jobs:
 
       - name: Build Docker image
         working-directory: qemu-wasm
-        run: docker build -t qemu-wasm .
+        run: docker build -t qw .
 
-      - name: Download Android ISO
+      - name: Download ISO from Release (exact filename)
         run: |
           mkdir -p qemu-wasm/htdocs/images
-          curl -L -# -o qemu-wasm/htdocs/images/android-x86.iso \
-            https://osdn.net/dl/android-x86/android-x86_64-9.0-r2.iso
+          curl -L -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+               -H "Accept: application/octet-stream" \
+               -o qemu-wasm/htdocs/images/android-x86_64-9.0-r2.iso \
+               https://github.com/hihello15895-ui/andro_VM/releases/download/iso/android-x86_64-9.0-r2.iso
+          echo "ISO downloaded: $(du -h qemu-wasm/htdocs/images/android-x86_64-9.0-r2.iso)"
 
-      - name: Build REAL .wasm + bundle ISO
+      - name: Build REAL qemu-system-x86_64.wasm
         run: |
-          docker run --rm -v ${{ github.workspace }}/qemu-wasm:/src -w /src qemu-wasm bash -c '
+          docker run --rm -v ${{ github.workspace }}/qemu-wasm:/src -w /src qw bash -c '
             set -e
 
-            # Ye exact command ktock khud use karta hai (working 2025)
             emconfigure ./configure \
               --target-list=x86_64-softmmu \
               --disable-werror \
@@ -55,14 +57,16 @@ jobs:
 
             emmake make -j$(nproc) qemu-system-x86_64
 
-            # Real .wasm file bani hogi ab
             ls -lh htdocs/qemu-system-x86_64.*
+          '
 
-            # ISO bundle karo
+      - name: Bundle ISO (exact filename)
+        run: |
+          docker run --rm -v ${{ github.workspace }}/qemu-wasm:/src qw bash -c '
             python3 /emsdk/upstream/emscripten/tools/file_packager.py \
-              htdocs/qemu.data \
-              --preload images/android-x86.iso@/android-x86.iso \
-              --js-output=htdocs/load.js \
+              /src/htdocs/qemu.data \
+              --preload /src/htdocs/images/android-x86_64-9.0-r2.iso@/android-x86_64-9.0-r2.iso \
+              --js-output=/src/htdocs/load.js \
               --use-preload-plugins --lz4
           '
 
@@ -74,34 +78,24 @@ jobs:
       - name: Final index.html
         run: |
           mkdir -p dist
-          cp -r qemu-wasm/htdocs/* dist/
+          cp qemu-wasm/htdocs/* dist/
           cat > dist/index.html <<'EOF'
-          <!DOCTYPE html><html><head><meta charset=utf-8><title>Android-x86 9.0 × QEMU/WASM</title>
-          <style>body{margin:0;background:#000;color:#0f0;font-family:system-ui;text-align:center;padding:30px}
-          canvas{max-width:100%;image-rendering:pixelated;border:6px solid #0f0;box-shadow:0 0 30px #0f0}</style>
+          <!DOCTYPE html><html><head><meta charset=utf-8><title>Android-x86 9.0</title>
+          <style>body{margin:0;background:#000;color:#0f0;text-align:center;padding:30px;font-family:system-ui}
+          canvas{max-width:100%;image-rendering:pixelated;border:6px solid #0f0;border-radius:16px}</style>
           <script src="load.js"></script></head><body>
           <h1>Android-x86 9.0-r2 (Real QEMU/WASM)</h1>
           <canvas></canvas><br><br>
-          <button onclick="start()" style="font-size:22px;padding:15px 40px;background:#0f0;color:#000;border:none;border-radius:12px;cursor:pointer">Start Android</button>
-          <p>First boot: 60–90 seconds</p>
-          <script>
-          function start(){
-            Module({canvas:document.querySelector('canvas'), arguments:[
-              '-cpu', 'qemu64,+ssse3,+sse4.2,+popcnt',
-              '-m', '2048', '-smp', '4',
-              '-device', 'virtio-gpu-pci',
-              '-device', 'virtio-keyboard-pci',
-              '-device', 'virtio-mouse-pci',
-              '-drive', 'if=none,id=cdrom,format=raw,readonly=on,file=/android-x86.iso',
-              '-device', 'ide-cd,drive=cdrom,bootindex=0',
-              '-boot', 'd'
-            ]});
-          }
-          </script></body></html>
+          <button onclick="Module({canvas:document.querySelector('canvas'),arguments:['-cpu','qemu64,+ssse3,+sse4.2,+popcnt','-m','2048','-smp','4','-device','virtio-gpu-pci','-device','virtio-keyboard-pci','-device','virtio-mouse-pci','-drive','if=none,id=cdrom,format=raw,readonly=on,file=/android-x86_64-9.0-r2.iso','-device','ide-cd,drive=cdrom,bootindex=0','-boot','d']})" 
+            style="font-size:24px;padding:20px 50px;background:#0f0;color:#000;border:none;border-radius:15px;cursor:pointer">
+            Start Android
+          </button>
+          <p>First boot 60–90 sec</p>
+          </body></html>
           EOF
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Android-x86-QEMU-WASM-REAL
+          name: Android-x86-9-QEMU-WASM-REAL
           path: dist/
