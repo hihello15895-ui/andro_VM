@@ -16,14 +16,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Docker (official method)
+      - name: Install Docker + jq
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y ca-certificates curl gnupg lsb-release
+          sudo apt-get install -y ca-certificates curl gnupg lsb-release jq -y
           sudo mkdir -p /etc/apt/keyrings
           curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-          echo \
-            "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
             | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
           sudo apt-get update -qq
           sudo apt-get install -y docker-ce docker-ce-cli containerd.io
@@ -39,26 +38,31 @@ jobs:
         working-directory: qemu-wasm
         run: docker build -t qemu-wasm-builder .
 
-      # This step replaces the problematic dsaltares action (which caused the YAML error)
-      - name: Download Android-x86 9.0-r2 ISO from your GitHub Release
+      - name: Download Android-x86 9.0-r2 ISO (from your release → fallback mirror)
         run: |
           mkdir -p qemu-wasm/htdocs/images
-          curl -L -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-               -H "Accept: application/octet-stream" \
-               "https://api.github.com/repos/hihello15895-ui/andro_VM/releases/tags/iso/assets" > assets.json
 
-          ASSET_URL=$(jq -r '.[] | select(.name | test("android-x86_64-9.0-r2.*\\.iso$")) | .url' assets.json)
-          if [ -z "$ASSET_URL" ]; then
-            echo "ISO not found in release, falling back to direct download..."
+          # Try to get the ISO from your GitHub release first (fast + cached)
+          echo "Trying to download ISO from your GitHub release..."
+          ASSET_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/hihello15895-ui/andro_VM/releases/tags/iso" \
+            | jq -r '.assets[] | select(.name | endswith(".iso")) | .id' | head -n1)
+
+          if [ -n "$ASSET_ID" ] && [ "$ASSET_ID" != "null" ]; then
+            echo "Found ISO in release (asset ID: $ASSET_ID) → downloading..."
+            curl -L -# \
+              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/octet-stream" \
+              "https://api.github.com/repos/hihello15895-ui/andro_VM/releases/assets/$ASSET_ID" \
+              -o qemu-wasm/htdocs/images/android-x86.iso
+            echo "ISO downloaded from GitHub Release"
+          else
+            echo "No ISO found in release → downloading from official mirror..."
             curl -L -# -o qemu-wasm/htdocs/images/android-x86.iso \
               https://osdn.net/dl/android-x86/android-x86_64-9.0-r2.iso
-          else
-            curl -L -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-                 -H "Accept: application/octet-stream" \
-                 -o qemu-wasm/htdocs/images/android-x86.iso \
-                 "$ASSET_URL"
-            echo "Downloaded from GitHub Release"
           fi
+
+          echo "Final ISO size: $(du -h qemu-wasm/htdocs/images/android-x86.iso)"
 
       - name: Build QEMU → WebAssembly + bundle ISO
         run: |
@@ -106,14 +110,14 @@ jobs:
               '-drive','if=none,id=cdrom,format=raw,readonly=on,file=/android-x86.iso',
               '-device','ide-cd,drive=cdrom,bootindex=0','-boot','d'
             ]});this.disabled=true;document.getElementById('stop').disabled=false};
-            document.getElementById('stop').onclick=()=>{if(Module?.stop)Module.stop?.();
-              document.getElementById('start').disabled=false;this.disabled=true};
+            document.getElementById('stop').onclick=()=>{Module?.stop?.();document.getElementById('start').disabled=false;this.disabled=true};
           </script></body></html>
           EOF
 
       - name: Package everything
         run: |
           cp -r qemu-wasm/htdocs/* dist/
+          echo "Build complete! Files in dist/:"
           ls -lh dist/
 
       - name: Upload emulator artifact
