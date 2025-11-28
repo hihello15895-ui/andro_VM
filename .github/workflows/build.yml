@@ -10,7 +10,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
 
     steps:
       - name: Checkout
@@ -58,107 +58,19 @@ jobs:
             curl -L -# -o qemu-wasm/htdocs/images/android-x86.iso \
               https://osdn.net/dl/android-x86/android-x86_64-9.0-r2.iso
           fi
+          
+          ls -lh qemu-wasm/htdocs/images/
 
-      - name: Build QEMU + Bundle ISO (inside container)
+      - name: Build QEMU WebAssembly (inside container)
         run: |
           docker run --rm -d --name qb \
             -v ${{ github.workspace }}/qemu-wasm:/qemu \
             -w /qemu \
             qemu-wasm-builder tail -f /dev/null
           
+          # Install xterm-pty
           docker exec qb npm install xterm-pty
           
+          # Build QEMU with Emscripten
           docker exec qb sh -c '
-            EXTRA_CFLAGS="-O3 -g -Wno-error=unused-command-line-argument -matomics -mbulk-memory -DNDEBUG -DG_DISABLE_ASSERT -D_GNU_SOURCE -sASYNCIFY=1 -pthread -sPROXY_TO_PTHREAD=1 -sFORCE_FILESYSTEM -sALLOW_TABLE_GROWTH -sTOTAL_MEMORY=2300MB -sWASM_BIGINT -sMALLOC=mimalloc --js-library=/qemu/node_modules/xterm-pty/emscripten-pty.js -sEXPORT_ES6=1 -sASYNCIFY_IMPORTS=ffi_call_js"
-            emconfigure /qemu/configure \
-              --static --target-list=x86_64-softmmu --cpu=wasm32 --cross-prefix= \
-              --without-default-features --enable-system --with-coroutine=fiber --enable-virtfs \
-              --extra-cflags="$EXTRA_CFLAGS" --extra-cxxflags="$EXTRA_CFLAGS" \
-              --extra-ldflags="-sEXPORTED_RUNTIME_METHODS=getTempRet0,setTempRet0,addFunction,removeFunction,TTY,FS"
-            emmake make -j$(nproc) qemu-system-x86_64
-          '
-          
-          # Copy compiled QEMU files to htdocs
-          docker exec qb sh -c '
-            echo "Copying QEMU files to htdocs..."
-            cp /qemu/build/qemu-system-x86_64.* /qemu/htdocs/ 2>/dev/null || \
-            cp /qemu/qemu-system-x86_64.* /qemu/htdocs/ 2>/dev/null || \
-            find /qemu -name "qemu-system-x86_64.*" -exec cp {} /qemu/htdocs/ \;
-            echo "Files in htdocs:"
-            ls -lh /qemu/htdocs/
-          '
-          
-          # Bundle ISO
-          docker exec qb python3 /emsdk/upstream/emscripten/tools/file_packager.py \
-            /qemu/htdocs/qemu.data \
-            --preload /qemu/htdocs/images/android-x86.iso@/android-x86.iso \
-            --js-output=/qemu/htdocs/load.js \
-            --use-preload-plugins --lz4
-          
-          docker stop qb
-
-      - name: Verify WASM files
-        run: |
-          echo "Checking for QEMU WASM files..."
-          ls -lh qemu-wasm/htdocs/*.wasm qemu-wasm/htdocs/*.js 2>/dev/null || echo "WARNING: WASM files not found!"
-
-      - name: Optimize WASM (now safe – file exists)
-        run: |
-          WASM_FILE=$(ls qemu-wasm/htdocs/*.wasm 2>/dev/null | head -n1)
-          if [ -f "$WASM_FILE" ]; then
-            echo "Optimizing $WASM_FILE ..."
-            wasm-opt -O3 --asyncify "$WASM_FILE" -o "$WASM_FILE.opt" && mv "$WASM_FILE.opt" "$WASM_FILE"
-            echo "Optimization complete"
-          else
-            echo "ERROR: No .wasm file found – skipping optimization"
-            exit 1
-          fi
-
-      - name: Create final index.html
-        run: |
-          mkdir -p dist
-          cat > dist/index.html <<'EOF'
-          <!DOCTYPE html><html><head><meta charset=utf-8><title>Android-x86 9.0 × QEMU/WASM</title>
-          <style>body{margin:0;background:#000;color:#0f0;font-family:system-ui;text-align:center;padding:20px}
-          canvas{max-width:100%;image-rendering:pixelated;border:4px solid #0f0;border-radius:12px}
-          button{font-size:20px;padding:15px 30px;margin:10px;background:#0f0;color:#000;border:none;border-radius:8px;cursor:pointer}</style>
-          <script src="./qemu-system-x86_64.js"></script>
-          <script src="./load.js"></script></head><body>
-          <h1>Android-x86 9.0-r2 in Browser</h1><div><canvas id="canvas"></canvas></div>
-          <p><button id=start>Start Android</button> <button id=stop disabled>Stop</button></p>
-          <p>First boot ≈ 60–90 seconds — please wait!</p>
-          <script>
-            document.getElementById('start').onclick=()=>{
-              Module({
-                canvas:document.getElementById('canvas'),
-                arguments:[
-                  '-cpu','qemu64,+ssse3,+sse4.2,+popcnt','-m','2048','-smp','4',
-                  '-device','virtio-gpu-pci','-device','virtio-keyboard-pci','-device','virtio-mouse-pci',
-                  '-drive','if=none,id=cdrom,format=raw,readonly=on,file=/android-x86.iso',
-                  '-device','ide-cd,drive=cdrom,bootindex=0','-boot','d'
-                ]
-              });
-              this.disabled=true;
-              document.getElementById('stop').disabled=false
-            };
-            document.getElementById('stop').onclick=()=>{
-              Module?.stop?.();
-              document.getElementById('start').disabled=false;
-              this.disabled=true
-            };
-          </script></body></html>
-          EOF
-
-      - name: Package final files
-        run: |
-          cp -r qemu-wasm/htdocs/* dist/
-          echo "Final build contents:"
-          ls -lh dist/
-          echo "Total size:"
-          du -sh dist/
-
-      - name: Upload emulator
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-x86-9-qemu-wasm-emulator
-          path: dist/
+            EXTRA_CFLAGS="-O3 -g -Wno-error=unused-command-line-argument -matomics -mbulk-memory -DNDEBUG -DG_DISABLE_ASSERT -D_GNU_SOURCE -sASYNCIFY=1 -pthread -sPROXY_TO_PTHREAD=1 -sFORCE_FILESYSTEM -sALLOW_TABLE_GROWTH -sTOTAL_MEMORY=2300MB -sWASM_BIGINT -sMALLOC=mimalloc --js-library=/qemu/node_modules/xterm-pty/emscripten-pty.js -sEXPORT_
