@@ -32,7 +32,10 @@ jobs:
           version: 3.1.58
 
       - name: Install tools
-        run: sudo apt-get update -y && sudo apt-get install -y git make binaryen wget curl ca-certificates
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y git make binaryen wget curl ca-certificates \
+            clang build-essential default-jre-headless python3 python3-pip cmake pkg-config
 
       - name: Clone v86
         run: |
@@ -106,6 +109,18 @@ jobs:
             echo "SHA256: $(sha256sum android-x86.iso | awk '{print $1}')"
           fi
 
+      - name: Setup Rust toolchain (optional)
+        run: |
+          set -eo pipefail
+          # Install rustup if not present (non-interactive)
+          if ! command -v rustc >/dev/null 2>&1; then
+            curl https://sh.rustup.rs -sSf | sh -s -- -y
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup default stable || true
+          rustup component add rust-src || true
+          rustup target add wasm32-unknown-unknown || true
+
       - name: Build v86 (robust)
         run: |
           set -eo pipefail
@@ -116,7 +131,8 @@ jobs:
           fi
 
           # Try a list of common targets; break if any succeeds
-          TARGETS=(libv86.js v86.js libv86 v86 all dist)
+          # Prioritize build/ prefixed targets as per the Makefile
+          TARGETS=(build/libv86.js build/v86_all.js build/v86.wasm build/libv86.mjs build/libv86-debug.js build/v86-debug.wasm build/libv86.js v86.js libv86 v86 all dist)
           for t in "${TARGETS[@]}"; do
             echo "Trying target: $t"
             if emmake make -j$(nproc) "$t"; then
