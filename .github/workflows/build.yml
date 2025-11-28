@@ -20,18 +20,49 @@ jobs:
           version: 3.1.58
 
       - name: Install tools
-        run: sudo apt-get update -y && sudo apt-get install -y git make binaryen wget
+        run: sudo apt-get update -y && sudo apt-get install -y git make binaryen wget curl ca-certificates
 
       - name: Clone v86
         run: |
           git clone --depth 1 https://github.com/copy/v86.git
           cd v86 && git submodule update --init --recursive
 
-      - name: Download Android-x86 ISO
+      - name: Download Android-x86 ISO (robust)
         run: |
+          set -euo pipefail
           mkdir -p v86/images
           cd v86/images
-          wget -q https://osdn.net/dl/android-x86/android-x86_64-4.4-r5.iso -O android-x86.iso
+          URL="https://osdn.net/dl/android-x86/android-x86_64-4.4-r5.iso"
+          # Set a user agent to avoid being blocked by some servers
+          UA="Mozilla/5.0 (compatible; GitHub-Action; +https://github.com)"
+          echo "Downloading Android-x86 ISO from: $URL"
+          # Prefer wget if available, but use fallback to curl. Keep verbose logs for diagnostics
+            if command -v wget >/dev/null 2>&1; then
+            wget --user-agent="$UA" --continue --tries=8 --retry-connrefused --waitretry=5 --timeout=30 --show-progress -O android-x86.iso "$URL" || WGET_EXIT=$? || true
+          else
+            echo "wget not found, trying curl..."
+            WGET_EXIT=1
+          fi
+          if [ "${WGET_EXIT:-0}" != "0" ]; then
+            echo "wget failed (exit=${WGET_EXIT:-0}), trying curl as fallback..."
+            # curl --fail causes non-zero exit on HTTP 4xx/5xx
+              if command -v curl >/dev/null 2>&1; then
+              curl -A "$UA" -L --retry 8 --retry-delay 5 --max-time 120 --fail -o android-x86.iso "$URL"
+            else
+              echo "curl not available" >&2
+              exit 1
+            fi
+          fi
+          # Verify we've got a reasonably-sized file and show diagnostics
+          if [ ! -f android-x86.iso ]; then
+            echo "ISO download failed: file not found" >&2
+            exit 1
+          fi
+          echo "Downloaded file size:" $(stat -c%s android-x86.iso) "bytes"
+          # Optional: print first bytes only (hexdump) and compute sha256 for traceability
+          if command -v sha256sum >/dev/null 2>&1; then
+            echo "SHA256: $(sha256sum android-x86.iso | awk '{print $1}')"
+          fi
 
       - name: Build v86
         run: |
