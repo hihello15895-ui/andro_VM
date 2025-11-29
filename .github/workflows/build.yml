@@ -11,7 +11,7 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install system deps
         run: |
@@ -48,10 +48,12 @@ jobs:
           cp -r qemu-wasm/htdocs/* dist/
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: qemu-wasm-dist
           path: dist
+          retention-days: 7
+          compression-level: 6
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
