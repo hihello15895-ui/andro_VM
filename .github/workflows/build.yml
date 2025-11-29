@@ -18,7 +18,30 @@ jobs:
         run: |
           sudo apt update
           # `wasm-opt` isn't a standalone package in apt; the tool is provided by the `binaryen` package.
-          sudo apt install -y curl jq python3 git make npm docker.io binaryen
+          # INSTALL BASE PACKAGES FIRST (without docker) — avoids docker/containerd conflicts
+          sudo apt install -y curl jq python3 git make npm binaryen
+
+          # Docker: only install if not already present on the GitHub runner.
+          if command -v docker >/dev/null 2>&1; then
+            echo "Docker already present: $(docker --version)"
+          else
+            echo "Docker is not present; attempting to install docker.io via apt"
+            # If containerd.io is installed it can conflict with the docker.io package. Remove it first.
+            if dpkg -l | grep -q '^ii.*containerd.io'; then
+              echo "Found containerd.io; removing to avoid conflicts with apt docker.io"
+              sudo apt-get remove -y containerd.io || true
+            fi
+            # Try installing docker.io; if there's a conflict or the package isn't available, fall back to Docker CE repo
+            if ! sudo apt-get install -y -q docker.io; then
+              echo "apt docker.io failed. Trying official Docker repository installation instead."
+              sudo apt-get remove -y docker.io containerd || true
+              curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+              echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+              sudo apt-get update
+              sudo apt-get install -y docker-ce docker-ce-cli containerd.io || true
+            fi
+          fi
+
           # verify wasm-opt is available
           if ! command -v wasm-opt >/dev/null 2>&1; then
             echo "wasm-opt not found after installing binaryen; listing versions and contents for debugging"
