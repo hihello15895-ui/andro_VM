@@ -17,7 +17,16 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y curl jq python3 git make npm docker.io binaryen wasm-opt
+          # `wasm-opt` isn't a standalone package in apt; the tool is provided by the `binaryen` package.
+          sudo apt install -y curl jq python3 git make npm docker.io binaryen
+          # verify wasm-opt is available
+          if ! command -v wasm-opt >/dev/null 2>&1; then
+            echo "wasm-opt not found after installing binaryen; listing versions and contents for debugging"
+            dpkg -l | grep -E 'binaryen|wasm' || true
+            # Print some info and fail so the workflow fails loudly if wasm-opt is still missing
+            echo "ERROR: wasm-opt is not available after installing binaryen";
+            exit 1;
+          fi
 
       - name: Start Docker
         run: sudo systemctl start docker
