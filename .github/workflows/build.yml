@@ -1,174 +1,60 @@
-name: Android-x86 QEMU WebAssembly Build
+name: Build QEMU WASM
 
 on:
-  workflow_dispatch:
   push:
-    branches: [ main, master ]
-  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v3
 
-      - name: Install dependencies
+      - name: Install system deps
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y curl jq python3 make git npm binaryen
+          sudo apt update
+          sudo apt install -y python3 cmake ninja-build curl build-essential
 
-      - name: Install Docker
+      - name: Install Emscripten
         run: |
-          sudo apt-get install -y ca-certificates gnupg lsb-release
-          sudo mkdir -p /etc/apt/keyrings
-          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
-            | sudo tee /etc/apt/sources.list.d/docker.list
-          sudo apt-get update -qq
-          sudo apt-get install -y docker-ce docker-ce-cli containerd.io
-          sudo systemctl start docker
+          git clone https://github.com/emscripten-core/emsdk.git
+          cd emsdk
+          ./emsdk install latest
+          ./emsdk activate latest
+          echo "source $(pwd)/emsdk_env.sh" >> $GITHUB_ENV
+
+      - name: Load EMSDK env
+        run: source $GITHUB_ENV
 
       - name: Clone QEMU-WASM
         run: |
-          git clone --depth 1 https://github.com/ktock/qemu-wasm.git
+          git clone https://github.com/copy/v86.git qemu-wasm
           cd qemu-wasm
-          git submodule update --init --depth 1
+          npm install
 
-      - name: Build Docker image
-        working-directory: qemu-wasm
-        run: docker build -t qemu-wasm-builder .
-
-      - name: Download Android-x86 ISO
+      - name: Build QEMU WASM
         run: |
-          mkdir -p qemu-wasm/htdocs/images
-          curl -L -o qemu-wasm/htdocs/images/android-x86.iso \
-            https://osdn.net/dl/android-x86/android-x86_64-9.0-r2.iso
+          cd qemu-wasm
+          npm run build
 
-      - name: Build QEMU inside container
-        run: |
-          docker run --rm -d --name qb \
-            -v "${{ github.workspace }}/qemu-wasm:/qemu" \
-            -w /qemu qemu-wasm-builder tail -f /dev/null
-
-          docker exec qb npm install xterm-pty
-
-          docker exec qb sh -c '
-            EXTRA_CFLAGS="-O3 -g -matomics -mbulk-memory -sASYNCIFY=1 -pthread -sWASM_BIGINT -DNDEBUG"
-            emconfigure ./configure \
-              --static --target-list=x86_64-softmmu --cpu=wasm32 \
-              --extra-cflags="$EXTRA_CFLAGS"
-            emmake make -j$(nproc)
-          '
-
-          docker exec qb sh -c '
-            WASM_FILE=$(find /qemu -name "*.wasm" | head -n 1)
-            cp "$WASM_FILE" /qemu/htdocs/qemu-system-x86_64.wasm
-          '
-
-          docker exec qb python3 /emsdk/upstream/emscripten/tools/file_packager.py \
-            /qemu/htdocs/qemu.data \
-            --preload /qemu/htdocs/images/android-x86.iso@/android-x86.iso \
-            --js-output=/qemu/htdocs/load.js
-
-          docker stop qb
-
-      - name: Generate qemu-system-x86_64.js
-        run: |
-          cat > qemu-wasm/htdocs/qemu-system-x86_64.js << 'EOF'
-var Module = typeof Module !== 'undefined' ? Module : {};
-
-Module.print = function (text) {
-  if (arguments.length > 1) text = Array.prototype.slice.call(arguments).join(' ');
-  console.log(text);
-};
-
-Module.printErr = function (text) {
-  if (arguments.length > 1) text = Array.prototype.slice.call(arguments).join(' ');
-  console.error(text);
-};
-
-Module.preRun = Module.preRun || [];
-Module.postRun = Module.postRun || [];
-
-Module.canvas = (function () {
-  let c = document.getElementById("canvas");
-  c.addEventListener("webglcontextlost", (e) => {
-    alert("WebGL context lost. Reload page.");
-    e.preventDefault();
-  });
-  return c;
-})();
-
-Module.locateFile = function (file) {
-  return "./" + file;
-};
-
-Module.instantiateWasm = function (imports, successCallback) {
-  fetch("qemu-system-x86_64.wasm")
-    .then(response => response.arrayBuffer())
-    .then(bytes => WebAssembly.instantiate(bytes, imports))
-    .then(result => successCallback(result.instance))
-    .catch(err => { console.error(err); throw err; });
-  return {};
-};
-
-window.Module = Module;
-EOF
-
-      - name: Optimize WASM
-        run: |
-          WASM=$(ls qemu-wasm/htdocs/*.wasm | head -n 1)
-          wasm-opt -O3 --asyncify "$WASM" -o "$WASM.opt"
-          mv "$WASM.opt" "$WASM"
-
-      - name: Create index.html
+      - name: Create dist folder
         run: |
           mkdir -p dist
-          cat > dist/index.html << 'EOF'
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
-<title>Android-x86 9.0 QEMU/WASM</title>
-<style>
-body { background:#000; color:#0f0; text-align:center; font-family:system-ui; }
-canvas { border:3px solid #0f0; border-radius:12px; margin-top:20px; }
-</style>
-<script src="./qemu-system-x86_64.js"></script>
-<script src="./load.js"></script>
-</head>
-<body>
-<h1>Android-x86 QEMU (WebAssembly)</h1>
-<canvas id="canvas" width="1024" height="768"></canvas>
-
-<button onclick="startVM()">Start Android</button>
-
-<script>
-function startVM() {
-  Module({
-    arguments: [
-      '-cpu','qemu64','-m','2048','-smp','4',
-      '-drive','file=/android-x86.iso,format=raw,readonly=on',
-      '-boot','d'
-    ]
-  });
-}
-</script>
-</body>
-</html>
-EOF
-
-      - name: Copy final build
-        run: |
+          cp qemu-wasm/build/v86.js dist/qemu-system-x86_64.js
+          cp -r qemu-wasm/build/* dist/
           cp -r qemu-wasm/htdocs/* dist/
-          ls -lh dist/
-          du -sh dist/
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v3
         with:
-          name: android-x86-qemu-wasm-emulator
-          path: dist/
+          name: qemu-wasm-dist
+          path: dist
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: dist
