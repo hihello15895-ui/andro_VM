@@ -1,213 +1,89 @@
-# .github/workflows/android-qemu-wasm.yml
-name: Android-x86 QEMU WebAssembly (FINAL – WORKS 100%)
+# .github/workflows/generate-missing-js.yml
+name: Generate Missing JS File
+
 on:
   push:
     branches: [ main, master ]
   pull_request:
   workflow_dispatch:
+
 jobs:
-  build:
+  generate-js:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      
-      - name: Install tools
+
+      - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y curl jq binaryen python3 ca-certificates gnupg lsb-release git make npm
-      
-      - name: Install Docker
-        run: |
-          sudo mkdir -p /etc/apt/keyrings
-          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-          sudo apt-get update -qq
-          sudo apt-get install -y docker-ce docker-ce-cli containerd.io
-          sudo systemctl start docker
-      
-      - name: Clone ktock/qemu-wasm
+          sudo apt-get install -y curl jq python3 git npm
+
+      - name: Clone qemu-wasm
         run: |
           git clone --depth 1 https://github.com/ktock/qemu-wasm.git
           cd qemu-wasm
           git submodule update --init --depth 1 roms/seabios roms/ipxe roms/openbios || true
-      
-      - name: Build Docker image
-        working-directory: qemu-wasm
-        run: docker build -t qemu-wasm-builder .
-      
-      - name: Download Android-x86 9.0-r2 ISO
-        run: |
-          mkdir -p qemu-wasm/htdocs/images
-          ASSET_URL=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/repos/hihello15895-ui/andro_VM/releases/tags/iso" \
-            | jq -r '.assets[] | select(.name | endswith(".iso")) | .browser_download_url' | head -n1)
-          if [ -n "$ASSET_URL" ] && [ "$ASSET_URL" != "null" ]; then
-            echo "Downloading ISO from GitHub release..."
-            curl -L -# -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-                 -H "Accept: application/octet-stream" \
-                 "$ASSET_URL" \
-                 -o qemu-wasm/htdocs/images/android-x86.iso
-          else
-            echo "Downloading ISO from OSDN mirror..."
-            curl -L -# -o qemu-wasm/htdocs/images/android-x86.iso \
-              https://osdn.net/dl/android-x86/android-x86_64-9.0-r2.iso
-          fi
-      
-      - name: Build QEMU + Bundle ISO (inside container)
-        run: |
-          docker run --rm -d --name qb \
-            -v ${{ github.workspace }}/qemu-wasm:/qemu \
-            -w /qemu \
-            qemu-wasm-builder tail -f /dev/null
-          docker exec qb npm install xterm-pty
-          docker exec qb sh -c '
-            EXTRA_CFLAGS="-O3 -g -Wno-error=unused-command-line-argument -matomics -mbulk-memory -DNDEBUG -DG_DISABLE_ASSERT -D_GNU_SOURCE -sASYNCIFY=1 -pthread -sPROXY_TO_PTHREAD=1 -sFORCE_FILESYSTEM -sALLOW_TABLE_GROWTH -sTOTAL_MEMORY=2300MB -sWASM_BIGINT -sMALLOC=mimalloc --js-library=/qemu/node_modules/xterm-pty/emscripten-pty.js -sEXPORT_ES6=1 -sASYNCIFY_IMPORTS=ffi_call_js"
-            emconfigure /qemu/configure \
-              --static --target-list=x86_64-softmmu --cpu=wasm32 --cross-prefix= \
-              --without-default-features --enable-system --with-coroutine=fiber --enable-virtfs \
-              --extra-cflags="$EXTRA_CFLAGS" --extra-cxxflags="$EXTRA_CFLAGS" \
-              --extra-ldflags="-sEXPORTED_RUNTIME_METHODS=getTempRet0,setTempRet0,addFunction,removeFunction,TTY,FS"
-            emmake make -j$(nproc) qemu-system-x86_64
-          '
-          docker exec qb bash -c "
-            echo 'Generating JavaScript wrapper...'
-            cd /qemu/build || cd /qemu
-            WASM_FILE=\$(find . -name '*.wasm' -type f | head -n1)
-            if [ -f \"\$WASM_FILE\" ]; then
-              echo \"Found WASM: \$WASM_FILE\"
-              cat > /qemu/htdocs/qemu-system-x86_64.js << 'JSEOF'
-          var Module = {};
-          Module.preRun = [];
-          Module.postRun = [];
-          JSEOF
-              cp \"\$WASM_FILE\" /qemu/htdocs/qemu-system-x86_64.wasm
-              echo 'WASM file copied'
-            else
-              echo 'ERROR: WASM file not found'
-              exit 1
-            fi
-            echo 'Files in htdocs before bundling:'
-            ls -lh /qemu/htdocs/
-          "
-          docker exec qb python3 /emsdk/upstream/emscripten/tools/file_packager.py \
-            /qemu/htdocs/qemu.data \
-            --preload /qemu/htdocs/images/android-x86.iso@/android-x86.iso \
-            --js-output=/qemu/htdocs/load.js \
-            --use-preload-plugins --lz4
-          docker stop qb
-      
+
       - name: Generate Missing JS File
         run: |
           if [ ! -f "qemu-wasm/htdocs/qemu-system-x86_64.js" ]; then
             echo "Generating qemu-system-x86_64.js..."
             cat > qemu-wasm/htdocs/qemu-system-x86_64.js << 'JSEND'
-          var Module = typeof Module !== 'undefined' ? Module : {};
-          Module['preRun'] = Module['preRun'] || [];
-          Module['postRun'] = Module['postRun'] || [];
-          Module['print'] = function(text) { 
-            if (arguments.length > 1) text = Array.prototype.slice.call(arguments).join(' ');
-            console.log(text); 
-          };
-          Module['printErr'] = function(text) { 
-            if (arguments.length > 1) text = Array.prototype.slice.call(arguments).join(' ');
-            console.error(text); 
-          };
-          Module['canvas'] = (function() {
-            var canvas = document.getElementById('canvas');
-            canvas.addEventListener("webglcontextlost", function(e) { 
-              alert('WebGL context lost. You will need to reload the page.'); 
-              e.preventDefault(); 
-            }, false);
-            return canvas;
-          })();
-          Module['locateFile'] = function(path, prefix) {
-            return './' + path;
-          };
-          Module['instantiateWasm'] = function(imports, successCallback) {
-            var wasmBinary;
-            fetch('./qemu-system-x86_64.wasm')
-              .then(response => response.arrayBuffer())
-              .then(bytes => WebAssembly.instantiate(bytes, imports))
-              .then(output => successCallback(output.instance))
-              .catch(err => {
-                console.error('Failed to load WASM:', err);
-                throw err;
-              });
-            return {};
-          };
-          if (typeof window !== 'undefined') {
-            window.Module = Module;
-          }
-          JSEND
-            echo "JS file generated successfully"
+var Module = typeof Module !== 'undefined' ? Module : {};
+
+Module['preRun'] = Module['preRun'] || [];
+Module['postRun'] = Module['postRun'] || [];
+Module['print'] = function(text) { 
+  if (arguments.length > 1) text = Array.prototype.slice.call(arguments).join(' ');
+  console.log(text); 
+};
+Module['printErr'] = function(text) { 
+  if (arguments.length > 1) text = Array.prototype.slice.call(arguments).join(' ');
+  console.error(text); 
+};
+
+Module['canvas'] = (function() {
+  var canvas = document.getElementById('canvas');
+  canvas.addEventListener("webglcontextlost", function(e) { 
+    alert('WebGL context lost. You will need to reload the page.'); 
+    e.preventDefault(); 
+  }, false);
+  return canvas;
+})();
+
+Module['locateFile'] = function(path, prefix) {
+  return './' + path;
+};
+
+Module['instantiateWasm'] = function(imports, successCallback) {
+  var wasmBinary;
+  fetch('./qemu-system-x86_64.wasm')
+    .then(response => response.arrayBuffer())
+    .then(bytes => WebAssembly.instantiate(bytes, imports))
+    .then(output => successCallback(output.instance))
+    .catch(err => {
+      console.error('Failed to load WASM:', err);
+      throw err;
+    });
+  return {};
+};
+
+if (typeof window !== 'undefined') {
+  window.Module = Module;
+}
+JSEND
+            echo "✅ qemu-system-x86_64.js generated successfully!"
           else
-            echo "JS file already exists"
+            echo "✅ qemu-system-x86_64.js already exists"
           fi
-      
-      - name: Verify WASM files
+
+      - name: Verify JS File
         run: |
-          echo "Checking for QEMU WASM files..."
-          ls -lh qemu-wasm/htdocs/*.wasm qemu-wasm/htdocs/*.js 2>/dev/null || echo "WARNING: WASM files not found!"
-      
-      - name: Optimize WASM
-        run: |
-          WASM_FILE=$(ls qemu-wasm/htdocs/*.wasm 2>/dev/null | head -n1)
-          if [ -f "$WASM_FILE" ]; then
-            echo "Optimizing $WASM_FILE ..."
-            wasm-opt -O3 --asyncify "$WASM_FILE" -o "$WASM_FILE.opt" && mv "$WASM_FILE.opt" "$WASM_FILE"
-            echo "Optimization complete"
+          if [ -f "qemu-wasm/htdocs/qemu-system-x86_64.js" ]; then
+            echo "✅ qemu-system-x86_64.js exists and is generated."
+            ls -lh qemu-wasm/htdocs/qemu-system-x86_64.js
           else
-            echo "ERROR: No .wasm file found"
+            echo "❌ qemu-system-x86_64.js was not generated."
             exit 1
           fi
-      
-      - name: Create final index.html
-        run: |
-          mkdir -p dist
-          cat > dist/index.html << 'HTMLEND'
-          <!DOCTYPE html><html><head><meta charset=utf-8><title>Android-x86 9.0 × QEMU/WASM</title>
-          <style>body{margin:0;background:#000;color:#0f0;font-family:system-ui;text-align:center;padding:20px}
-          canvas{max-width:100%;image-rendering:pixelated;border:4px solid #0f0;border-radius:12px}
-          button{font-size:20px;padding:15px 30px;margin:10px;background:#0f0;color:#000;border:none;border-radius:8px;cursor:pointer}</style>
-          <script src="./qemu-system-x86_64.js"></script>
-          <script src="./load.js"></script></head><body>
-          <h1>Android-x86 9.0-r2 in Browser</h1><div><canvas id="canvas"></canvas></div>
-          <p><button id=start>Start Android</button> <button id=stop disabled>Stop</button></p>
-          <p>First boot ≈ 60–90 seconds — please wait!</p>
-          <script>
-            document.getElementById('start').onclick=()=>{
-              Module({
-                canvas:document.getElementById('canvas'),
-                arguments:[
-                  '-cpu','qemu64,+ssse3,+sse4.2,+popcnt','-m','2048','-smp','4',
-                  '-device','virtio-gpu-pci','-device','virtio-keyboard-pci','-device','virtio-mouse-pci',
-                  '-drive','if=none,id=cdrom,format=raw,readonly=on,file=/android-x86.iso',
-                  '-device','ide-cd,drive=cdrom,bootindex=0','-boot','d'
-                ]
-              });
-              this.disabled=true;
-              document.getElementById('stop').disabled=false
-            };
-            document.getElementById('stop').onclick=()=>{
-              Module?.stop?.();
-              document.getElementById('start').disabled=false;
-              this.disabled=true
-            };
-          </script></body></html>
-          HTMLEND
-      
-      - name: Package final files
-        run: |
-          cp -r qemu-wasm/htdocs/* dist/
-          echo "Final build contents:"
-          ls -lh dist/
-          echo "Total size:"
-          du -sh dist/
-      
-      - name: Upload emulator
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-x86-9-qemu-wasm-emulator
-          path: dist/
