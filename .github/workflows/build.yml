@@ -53,7 +53,7 @@ jobs:
                  -H "Accept: application/octet-stream" \
                  "$ASSET_URL" -o qemu-wasm/htdocs/images/android-x86.iso
           else
-            "Downloading from OSDN mirror..."
+            echo "Downloading from OSDN mirror..."
             curl -L -# https://osdn.net/dl/android-x86/android-x86_64-9.0-r2.iso \
                  -o qemu-wasm/htdocs/images/android-x86.iso
           fi
@@ -92,7 +92,7 @@ jobs:
             emmake make -j$(nproc) qemu-system-x86_64
           '
 
-          # Let Emscripten generate the real .js loader (this is the key fix)
+          # This step generates the REAL working qemu-system-x86_64.js
           docker exec qb sh -c '
             cd build || cd .
             WASM_FILE=$(find . -name "qemu-system-x86_64.wasm" -o -name "*.wasm" | head -n1)
@@ -108,11 +108,10 @@ jobs:
 
             cp *.worker.js /qemu/htdocs/ 2>/dev/null || true
 
-            echo "Files generated in htdocs:"
+            echo "Generated files in htdocs:"
             ls -lh /qemu/htdocs/
           '
 
-          # Bundle the ISO
           docker exec qb python3 /emsdk/upstream/emscripten/tools/file_packager.py \
             /qemu/htdocs/qemu.data \
             --preload /qemu/htdocs/images/android-x86.iso@/android-x86.iso \
@@ -127,7 +126,7 @@ jobs:
             wasm-opt -O3 --asyncify qemu-wasm/htdocs/qemu-system-x86_64.wasm \
               -o qemu-wasm/htdocs/qemu-system-x86_64.wasm.tmp && \
             mv qemu-wasm/htdocs/qemu-system-x86_64.wasm.tmp qemu-wasm/htdocs/qemu-system-x86_64.wasm
-            echo "WASM optimized successfully"
+            echo "WASM optimized"
           fi
 
       - name: Create final index.html
@@ -194,13 +193,12 @@ EOF
           echo "=== FINAL DIST CONTENTS ==="
           ls -lh dist/
 
-          # These checks will fail the job if files are missing
-          [ -f dist/qemu-system-x86_64.js ]     || { echo "ERROR: qemu-system-x86_64.js missing!"; exit 1; }
-          [ -f dist/qemu-system-x86_64.wasm ]   || { echo "ERROR: wasm missing!"; exit 1; }
-          [ -f dist/load.js ]                   || { echo "ERROR: load.js missing!"; exit 1; }
-          [ -f dist/qemu.data ]                 || { echo "ERROR: qemu.data missing!"; exit 1; }
+          [ -f dist/qemu-system-x86_64.js ]   || { echo "ERROR: qemu-system-x86_64.js missing!"; exit 1; }
+          [ -f dist/qemu-system-x86_64.wasm ] || { echo "ERROR: wasm missing!"; exit 1; }
+          [ -f dist/load.js ]                 || { echo "ERROR: load.js missing!"; exit 1; }
+          [ -f dist/qemu.data ]               || { echo "ERROR: qemu.data missing!"; exit 1; }
 
-          echo "All required files are present and correct!"
+          echo "All files present – Build successful!"
           du -sh dist/
 
       - name: Upload artifact
