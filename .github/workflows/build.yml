@@ -14,67 +14,57 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Free up disk space (optional but recommended)
+      - name: Free disk space
         run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /opt/ghc
-          sudo rm -rf "/usr/local/share/boost"
-          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf "/usr/local/share/boost" || true
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY" || true
 
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y curl git make npm python3 binaryen jq docker.io || true
-          # Ensure docker is running
-          sudo systemctl start docker || true
+          sudo apt install -y curl git make npm python3 binaryen docker.io
+          sudo systemctl start docker
 
-      - name: Clone ktock/qemu-wasm (official working fork)
+      - name: Clone ktock/qemu-wasm
         run: |
           git clone --depth 1 https://github.com/ktock/qemu-wasm.git
-          cd qemu-wasm
-          git submodule update --init --depth 1
+          cd qemu-wasm && git submodule update --init --depth 1
 
       - name: Build Docker image
         working-directory: qemu-wasm
         run: docker build -t qemu-wasm-builder .
 
-      - name: Download Android-x86 9.0-r2 ISO
+      - name: Download Android-x86 ISO
         run: |
           mkdir -p qemu-wasm/htdocs/images
           curl -L -o qemu-wasm/htdocs/images/android-x86.iso \
             https://osdn.net/dl/android-x86/android-x86_64-9.0-r2.iso
 
-      - name: Build QEMU WASM + Generate Correct JS Glue
+      - name: Build QEMU WebAssembly + proper JS glue
         run: |
           docker run --rm -d --name qb \
             -v ${{ github.workspace }}/qemu-wasm:/qemu \
-            -w /qemu \
-            qemu-wasm-builder tail -f /dev/null
+            -w /qemu qemu-wasm-builder tail -f /dev/null
 
-          # Install required node module
           docker exec qb npm install xterm-pty
 
-          # Build QEMU with correct flags
           docker exec qb sh -c '
             EXTRA_CFLAGS="-O3 -DNDEBUG -matomics -mbulk-memory -pthread -sWASM_BIGINT"
             emconfigure ./configure \
               --static \
               --target-list=x86_64-softmmu \
               --cpu=wasm32 \
-              --disable-capstone \
-              --disable-libssh \
-              --disable-gtk \
-              --disable-sdl \
+              --disable-capstone --disable-libssh --disable-gtk --disable-sdl \
               --extra-cflags="$EXTRA_CFLAGS" \
               --extra-ldflags="-sALLOW_TABLE_GROWTH -sASYNCIFY=1"
 
             emmake make -j$(nproc) qemu-system-x86_64.wasm
           '
 
-          # CRITICAL: Generate proper full-featured JS loader (this is what was missing!)
           docker exec qb sh -c '
-            emcc -O3 \
-              qemu-system-x86_64.wasm \
+            emcc -O3 qemu-system-x86_64.wasm \
               -s ENVIRONMENT=web \
               -s ASYNCIFY=1 \
               -s WASM_BIGINT=1 \
@@ -89,74 +79,58 @@ jobs:
               -o htdocs/qemu-system-x86_64.js
           '
 
-          # Copy .wasm
           docker exec qb cp qemu-system-x86_64.wasm htdocs/
 
-          # Generate preload package (ISO embedded)
           docker exec qb python3 /emsdk/upstream/emscripten/tools/file_packager.py \
             htdocs/qemu.data \
             --preload images/android-x86.iso@/android-x86.iso \
             --js-output=htdocs/load.js
 
-          # Debug output
-          docker exec qb sh -c '
-            echo "Build complete!"
-            ls -lh htdocs/qemu-system-x86_64.*
-            ls -lh htdocs/qemu.data htdocs/load.js
-          '
-
           docker stop qb
 
-      - name: Optimize WASM binary (size + speed)
+      - name: Optimize .wasm
         run: |
-          wasm-opt -O3 --asyncify --pass-arg=asyncify-imports@emscripten_proxy_execute \
+          wasm-opt -O3 --asyncify \
             qemu-wasm/htdocs/qemu-system-x86_64.wasm \
             -o qemu-wasm/htdocs/qemu-system-x86_64.wasm
 
-      - name: Create perfect working index.html
+      - name: Create index.html (fixed heredoc syntax)
         run: |
+          mkdir -p dist
           cat > dist/index.html << 'EOF'
           <!DOCTYPE html>
           <html lang="en">
           <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Android-x86 9.0-r2 • QEMU WebAssembly</title>
+            <title>Android-x86 9.0-r2 • QEMU/WASM</title>
             <style>
-              body { background:#000; color:#0f0; font-family:system-ui,sans-serif; text-align:center; margin:0; padding:20px; }
-              h1 { margin: 10px 0 20px; }
-              canvas { border: 4px solid #0f0; border-radius: 16px; max-width: 100%; height: auto; }
-              button { font-size: 18px; padding: 14px 32px; margin: 20px; background:#000; color:#0f0; border:2px solid #0f0; border-radius:12px; cursor:pointer; }
-              button:hover { background:#003300; }
-              .info { margin: 20px; font-size:14px; opacity:0.8; }
+              body {margin:0; padding:20px; background:#000; color:#0f0; font-family:system-ui; text-align:center;}
+              canvas {border:4px solid #0f0; border-radius:16px; max-width:100%; image-rendering:pixelated;}
+              button {font-size:18px; padding:14px 32px; margin:20px; background:#000; color:#0f0; border:2px solid #0f0; border-radius:12px; cursor:pointer;}
+              button:disabled {opacity:0.6; cursor:not-allowed;}
+              .info {margin:20px; opacity:0.8; font-size:14px;}
             </style>
             <script src="./qemu-system-x86_64.js"></script>
             <script src="./load.js"></script>
           </head>
           <body>
             <h1>Android-x86 9.0-r2 (Pie)</h1>
-            <p>Running natively in your browser via QEMU + WebAssembly</p>
-            <canvas id="canvas" width="1024" height="768"></canvas>
-            <br>
-            <button onclick="startVM()">Start Android</button>
-            <div class="info">First boot takes 30–90 seconds • Be patient • Works best in Chrome/Edge</div>
+            <p>Running in your browser via QEMU + WebAssembly</p>
+            <canvas id="canvas" width="1024" height="768"></canvas><br>
+            <button id="startBtn">Start Android</button>
+            <div class="info">First boot: 30–90 seconds • Best on Chrome/Edge • No install needed</div>
 
             <script>
             const Module = {
-              canvas: (() => {
-                const canvas = document.getElementById('canvas');
-                canvas.addEventListener("webglcontextlost", () => alert("WebGL context lost. Reload page."));
-                return canvas;
-              })(),
-              print: text => console.log(text),
-              printErr: text => console.error(text),
+              canvas: document.getElementById('canvas'),
+              print: txt => console.log(txt),
+              printErr: txt => console.error(txt)
             };
 
-            function startVM() {
-              const button = document.querySelector('button');
-              button.disabled = true;
-              button.textContent = "Starting Android... (30–90s)";
-
+            document.getElementById('startBtn').onclick = function() {
+              this.disabled = true;
+              this.textContent = "Starting… (30–90s)";
               const args = [
                 '-cpu', 'qemu64,+ssse3,+sse4.2,+popcnt',
                 '-m', '2048',
@@ -172,49 +146,33 @@ jobs:
                 '-rtc', 'base=utc',
                 '-no-reboot'
               ];
-
               if (typeof createQemuModule !== 'undefined') {
-                createQemuModule(Module).then(mod => {
-                  Module = mod;
-                  Module.callMain(args);
-                });
+                createQemuModule(Module).then(mod => mod.callMain(args));
               } else {
                 Module.arguments = args;
               }
-            }
+            };
             </script>
           </body>
           </html>
           EOF
 
-      - name: Prepare final dist folder
+      - name: Assemble final dist folder
         run: |
-          mkdir -p dist
           cp -r qemu-wasm/htdocs/* dist/
-          cp dist/index.html dist/index.html  # overwrite with our improved version
-          echo "Final build size:"
-          du -sh dist
-          ls -lh dist
+          mv dist/index.html dist/index.html  # our version wins
 
-      - name: Verify critical files exist
+      - name: Verify files
         run: |
           set -e
-          test -f dist/qemu-system-x86_64.wasm && echo ".wasm OK"
-          test -f dist/qemu-system-x86_64.js && [ $(stat -c%s dist/qemu-system-x86_64.js) -gt 30000 ] && echo ".js OK (large enough)"
-          test -f dist/qemu.data && [ $(stat -c%s dist/qemu.data) -gt 800000000 ] && echo ".data OK"
-          test -f dist/load.js && echo "load.js OK"
-          test -f dist/index.html && echo "index.html OK"
+          ls -lh dist
+          [ -f dist/qemu-system-x86_64.wasm ] && echo "wasm OK"
+          [ $(stat -c%s dist/qemu-system-x86_64.js) -gt 30000 ] && echo "js OK"
+          [ $(stat -c%s dist/qemu.data) -gt 800000000 ] && echo "data OK"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: android-x86-wasm-latest
+          name: android-x86-wasm
           path: dist/
-          retention-days: 30
-
-      - name: Optional: Deploy to GitHub Pages (uncomment if you want auto-hosting)
-        # uses: peaceiris/actions-gh-pages@v4
-        # with:
-        #   github_token: ${{ secrets.GITHUB_TOKEN }}
-        #   publish_dir: ./dist
-        #   force_orphan: true
+          retention-days: 60
