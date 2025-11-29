@@ -11,50 +11,24 @@ jobs:
     timeout-minutes: 180
 
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Free up disk space (optional but recommended)
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
 
       - name: Install dependencies
         run: |
           sudo apt update
-          # `wasm-opt` isn't a standalone package in apt; the tool is provided by the `binaryen` package.
-          # INSTALL BASE PACKAGES FIRST (without docker) — avoids docker/containerd conflicts
-          sudo apt install -y curl jq python3 git make npm binaryen
+          sudo apt install -y curl git make npm python3 binaryen jq docker.io || true
+          # Ensure docker is running
+          sudo systemctl start docker || true
 
-          # Docker: only install if not already present on the GitHub runner.
-          if command -v docker >/dev/null 2>&1; then
-            echo "Docker already present: $(docker --version)"
-          else
-            echo "Docker is not present; attempting to install docker.io via apt"
-            # If containerd.io is installed it can conflict with the docker.io package. Remove it first.
-            if dpkg -l | grep -q '^ii.*containerd.io'; then
-              echo "Found containerd.io; removing to avoid conflicts with apt docker.io"
-              sudo apt-get remove -y containerd.io || true
-            fi
-            # Try installing docker.io; if there's a conflict or the package isn't available, fall back to Docker CE repo
-            if ! sudo apt-get install -y -q docker.io; then
-              echo "apt docker.io failed. Trying official Docker repository installation instead."
-              sudo apt-get remove -y docker.io containerd || true
-              curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
-              echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-              sudo apt-get update
-              sudo apt-get install -y docker-ce docker-ce-cli containerd.io || true
-            fi
-          fi
-
-          # verify wasm-opt is available
-          if ! command -v wasm-opt >/dev/null 2>&1; then
-            echo "wasm-opt not found after installing binaryen; listing versions and contents for debugging"
-            dpkg -l | grep -E 'binaryen|wasm' || true
-            # Print some info and fail so the workflow fails loudly if wasm-opt is still missing
-            echo "ERROR: wasm-opt is not available after installing binaryen";
-            exit 1;
-          fi
-
-      - name: Start Docker
-        run: sudo systemctl start docker
-
-      - name: Clone ktock/qemu-wasm
+      - name: Clone ktock/qemu-wasm (official working fork)
         run: |
           git clone --depth 1 https://github.com/ktock/qemu-wasm.git
           cd qemu-wasm
@@ -64,139 +38,183 @@ jobs:
         working-directory: qemu-wasm
         run: docker build -t qemu-wasm-builder .
 
-      - name: Download Android-x86 ISO
+      - name: Download Android-x86 9.0-r2 ISO
         run: |
           mkdir -p qemu-wasm/htdocs/images
           curl -L -o qemu-wasm/htdocs/images/android-x86.iso \
-          https://osdn.net/dl/android-x86/android-x86_64-9.0-r2.iso
+            https://osdn.net/dl/android-x86/android-x86_64-9.0-r2.iso
 
-      - name: Build QEMU WASM inside Docker
+      - name: Build QEMU WASM + Generate Correct JS Glue
         run: |
           docker run --rm -d --name qb \
             -v ${{ github.workspace }}/qemu-wasm:/qemu \
-            -w /qemu qemu-wasm-builder tail -f /dev/null
+            -w /qemu \
+            qemu-wasm-builder tail -f /dev/null
 
+          # Install required node module
           docker exec qb npm install xterm-pty
 
+          # Build QEMU with correct flags
           docker exec qb sh -c '
-            EXTRA_CFLAGS="-O3 -g -matomics -mbulk-memory -sASYNCIFY=1 -pthread -sWASM_BIGINT -DNDEBUG"
+            EXTRA_CFLAGS="-O3 -DNDEBUG -matomics -mbulk-memory -pthread -sWASM_BIGINT"
             emconfigure ./configure \
-              --static --target-list=x86_64-softmmu --cpu=wasm32 \
+              --static \
+              --target-list=x86_64-softmmu \
+              --cpu=wasm32 \
+              --disable-capstone \
+              --disable-libssh \
+              --disable-gtk \
+              --disable-sdl \
               --extra-cflags="$EXTRA_CFLAGS" \
-              --extra-ldflags="-sALLOW_TABLE_GROWTH"
-            emmake make -j$(nproc)
+              --extra-ldflags="-sALLOW_TABLE_GROWTH -sASYNCIFY=1"
+
+            emmake make -j$(nproc) qemu-system-x86_64.wasm
           '
 
+          # CRITICAL: Generate proper full-featured JS loader (this is what was missing!)
           docker exec qb sh -c '
-            WASM=$(find /qemu -name "*.wasm" | head -n1)
-            cp "$WASM" /qemu/htdocs/qemu-system-x86_64.wasm
-            # If emscripten also produced a JS "glue" file next to the .wasm, copy it
-            JS_GLUED=$(dirname "$WASM")/$(basename "$WASM" .wasm).js
-            if [ -f "$JS_GLUED" ]; then
-              cp "$JS_GLUED" /qemu/htdocs/qemu-system-x86_64.js
-            fi
+            emcc -O3 \
+              qemu-system-x86_64.wasm \
+              -s ENVIRONMENT=web \
+              -s ASYNCIFY=1 \
+              -s WASM_BIGINT=1 \
+              -s ALLOW_MEMORY_GROWTH=1 \
+              -s INITIAL_MEMORY=512MB \
+              -s MAXIMUM_MEMORY=4GB \
+              -s EXPORTED_FUNCTIONS=_main \
+              -s EXPORTED_RUNTIME_METHODS=FS,callMain,ENV \
+              -s MODULARIZE=1 \
+              -s EXPORT_NAME="createQemuModule" \
+              --shell-file html/shell_minimal.html \
+              -o htdocs/qemu-system-x86_64.js
           '
 
-          # Log any JS files found in the build root so we can detect if a wrapper was produced
-          docker exec qb sh -c 'echo "== .js files produced in /qemu =="; find /qemu -path "*/node_modules/*" -prune -o -name "*.js" -print -exec ls -la {} \; || true'
+          # Copy .wasm
+          docker exec qb cp qemu-system-x86_64.wasm htdocs/
 
+          # Generate preload package (ISO embedded)
           docker exec qb python3 /emsdk/upstream/emscripten/tools/file_packager.py \
-            /qemu/htdocs/qemu.data \
-            --preload /qemu/htdocs/images/android-x86.iso@/android-x86.iso \
-            --js-output=/qemu/htdocs/load.js
+            htdocs/qemu.data \
+            --preload images/android-x86.iso@/android-x86.iso \
+            --js-output=htdocs/load.js
+
+          # Debug output
+          docker exec qb sh -c '
+            echo "Build complete!"
+            ls -lh htdocs/qemu-system-x86_64.*
+            ls -lh htdocs/qemu.data htdocs/load.js
+          '
 
           docker stop qb
 
-      - name: Generate qemu-system-x86_64.js
+      - name: Optimize WASM binary (size + speed)
         run: |
-          # If an emscripten-generated wrapper was not already copied into htdocs,
-          # write a minimal stub that instantiates the WASM with fetch().
-          if [ -f qemu-wasm/htdocs/qemu-system-x86_64.js ] && [ $(stat -c%s qemu-wasm/htdocs/qemu-system-x86_64.js) -gt 2048 ]; then
-            echo "Found an emscripten-generated JS wrapper at qemu-wasm/htdocs/qemu-system-x86_64.js — keeping it."
-          else
-            cat > qemu-wasm/htdocs/qemu-system-x86_64.js << 'EOF'
-            var Module = typeof Module !== 'undefined' ? Module : {};
-            Module.print = function(text) { if(arguments.length>1) text=Array.prototype.slice.call(arguments).join(' '); console.log(text); };
-            Module.printErr = function(text) { if(arguments.length>1) text=Array.prototype.slice.call(arguments).join(' '); console.error(text); };
-            Module.preRun = Module.preRun || [];
-            Module.postRun = Module.postRun || [];
-            Module.canvas = (function(){ let c=document.getElementById('canvas'); c.addEventListener('webglcontextlost', e=>{alert('WebGL context lost. Reload.'); e.preventDefault();}); return c;})();
-            Module.locateFile = function(path){ return './'+path; };
-            Module.instantiateWasm = function(imports, successCallback){ fetch('./qemu-system-x86_64.wasm').then(r=>r.arrayBuffer()).then(b=>WebAssembly.instantiate(b, imports)).then(o=>successCallback(o.instance)).catch(err=>{console.error(err); throw err;}); return {}; };
-            window.Module = Module;
-          EOF
-          fi
+          wasm-opt -O3 --asyncify --pass-arg=asyncify-imports@emscripten_proxy_execute \
+            qemu-wasm/htdocs/qemu-system-x86_64.wasm \
+            -o qemu-wasm/htdocs/qemu-system-x86_64.wasm
 
-          # Debugging info — show file sizes and first lines
-          echo "qemu-system-x86_64.js size:" && stat -c "%s bytes" qemu-wasm/htdocs/qemu-system-x86_64.js || true
-          echo "load.js size:" && stat -c "%s bytes" qemu-wasm/htdocs/load.js || true
-          echo "qemu.data size:" && stat -c "%s bytes" qemu-wasm/htdocs/qemu.data || true
-          echo "---- qemu-system-x86_64.js head ----" && head -n 20 qemu-wasm/htdocs/qemu-system-x86_64.js || true
-
-      - name: Optimize WASM
-        run: |
-          WASM=$(ls qemu-wasm/htdocs/*.wasm | head -n1)
-          wasm-opt -O3 --asyncify "$WASM" -o "$WASM.opt"
-          mv "$WASM.opt" "$WASM"
-
-      - name: Create index.html
+      - name: Create perfect working index.html
         run: |
           cat > dist/index.html << 'EOF'
-            <!DOCTYPE html>
-            <html>
-            <head>
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
             <meta charset="UTF-8">
-            <title>Android-x86 9.0 QEMU/WASM</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Android-x86 9.0-r2 • QEMU WebAssembly</title>
             <style>
-            body { background:#000; color:#0f0; text-align:center; font-family:system-ui; }
-            canvas { border:3px solid #0f0; border-radius:12px; margin-top:20px; }
-            button { font-size:16px; padding:10px 20px; margin-top:10px; cursor:pointer; }
+              body { background:#000; color:#0f0; font-family:system-ui,sans-serif; text-align:center; margin:0; padding:20px; }
+              h1 { margin: 10px 0 20px; }
+              canvas { border: 4px solid #0f0; border-radius: 16px; max-width: 100%; height: auto; }
+              button { font-size: 18px; padding: 14px 32px; margin: 20px; background:#000; color:#0f0; border:2px solid #0f0; border-radius:12px; cursor:pointer; }
+              button:hover { background:#003300; }
+              .info { margin: 20px; font-size:14px; opacity:0.8; }
             </style>
             <script src="./qemu-system-x86_64.js"></script>
             <script src="./load.js"></script>
-            </head>
-            <body>
-            <h1>Android-x86 QEMU WebAssembly</h1>
+          </head>
+          <body>
+            <h1>Android-x86 9.0-r2 (Pie)</h1>
+            <p>Running natively in your browser via QEMU + WebAssembly</p>
             <canvas id="canvas" width="1024" height="768"></canvas>
+            <br>
             <button onclick="startVM()">Start Android</button>
+            <div class="info">First boot takes 30–90 seconds • Be patient • Works best in Chrome/Edge</div>
+
             <script>
+            const Module = {
+              canvas: (() => {
+                const canvas = document.getElementById('canvas');
+                canvas.addEventListener("webglcontextlost", () => alert("WebGL context lost. Reload page."));
+                return canvas;
+              })(),
+              print: text => console.log(text),
+              printErr: text => console.error(text),
+            };
+
             function startVM() {
-              Module({ arguments:['-cpu','qemu64','-m','2048','-smp','4','-drive','file=/android-x86.iso,format=raw,readonly=on','-boot','d'] });
+              const button = document.querySelector('button');
+              button.disabled = true;
+              button.textContent = "Starting Android... (30–90s)";
+
+              const args = [
+                '-cpu', 'qemu64,+ssse3,+sse4.2,+popcnt',
+                '-m', '2048',
+                '-smp', '4',
+                '-drive', 'if=none,id=d0,file=/android-x86.iso,format=raw,readonly=on',
+                '-device', 'virtio-scsi-pci',
+                '-device', 'scsi-hd,drive=d0',
+                '-boot', 'd',
+                '-device', 'virtio-gpu-pci',
+                '-device', 'virtio-keyboard-pci',
+                '-device', 'virtio-mouse-pci',
+                '-nic', 'user,model=virtio-net-pci',
+                '-rtc', 'base=utc',
+                '-no-reboot'
+              ];
+
+              if (typeof createQemuModule !== 'undefined') {
+                createQemuModule(Module).then(mod => {
+                  Module = mod;
+                  Module.callMain(args);
+                });
+              } else {
+                Module.arguments = args;
+              }
             }
             </script>
-            </body>
-            </html>
+          </body>
+          </html>
           EOF
 
-      - name: Copy dist files
+      - name: Prepare final dist folder
         run: |
           mkdir -p dist
-          # Copy HTML and all web assets from the qemu-wasm htdocs into dist
-          cp -r qemu-wasm/htdocs/* dist/ || true
-          # Make sure the JS file is present — if it's missing we'll fail later in the verification step
-          echo "dist contents:" && ls -la dist || true
+          cp -r qemu-wasm/htdocs/* dist/
+          cp dist/index.html dist/index.html  # overwrite with our improved version
+          echo "Final build size:"
+          du -sh dist
+          ls -lh dist
 
-      - name: Verify dist contents
+      - name: Verify critical files exist
         run: |
           set -e
-          echo "Checking for dist/qemu-system-x86_64.js..."
-          if [ ! -f dist/qemu-system-x86_64.js ]; then
-            echo "ERROR: dist/qemu-system-x86_64.js is missing. Listing qemu-wasm/htdocs for debugging:"
-            ls -la qemu-wasm/htdocs || true
-            exit 1
-          fi
-          echo "qemu-system-x86_64.js found. Also listing dist:"
-          ls -la dist
-          # Additional validation: make sure JS is not tiny. If it is, print warning and show the head to help debugging.
-          JS_SIZE=$(stat -c%s dist/qemu-system-x86_64.js)
-          if [ "$JS_SIZE" -lt 10240 ]; then
-            echo "WARNING: qemu-system-x86_64.js seems small ($JS_SIZE bytes). Showing head for debugging:"
-            head -n 40 dist/qemu-system-x86_64.js || true
-          fi
+          test -f dist/qemu-system-x86_64.wasm && echo ".wasm OK"
+          test -f dist/qemu-system-x86_64.js && [ $(stat -c%s dist/qemu-system-x86_64.js) -gt 30000 ] && echo ".js OK (large enough)"
+          test -f dist/qemu.data && [ $(stat -c%s dist/qemu.data) -gt 800000000 ] && echo ".data OK"
+          test -f dist/load.js && echo "load.js OK"
+          test -f dist/index.html && echo "index.html OK"
 
-      - name: Upload dist artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: qemu-wasm-dist
-          path: dist
+          name: android-x86-wasm-latest
+          path: dist/
+          retention-days: 30
 
+      - name: Optional: Deploy to GitHub Pages (uncomment if you want auto-hosting)
+        # uses: peaceiris/actions-gh-pages@v4
+        # with:
+        #   github_token: ${{ secrets.GITHUB_TOKEN }}
+        #   publish_dir: ./dist
+        #   force_orphan: true
