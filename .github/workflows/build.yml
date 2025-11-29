@@ -69,17 +69,17 @@ jobs:
 
       - name: Generate qemu-system-x86_64.js
         run: |
-cat > qemu-wasm/htdocs/qemu-system-x86_64.js << 'EOF'
-var Module = typeof Module !== 'undefined' ? Module : {};
-Module.print = function(text) { if(arguments.length>1) text=Array.prototype.slice.call(arguments).join(' '); console.log(text); };
-Module.printErr = function(text) { if(arguments.length>1) text=Array.prototype.slice.call(arguments).join(' '); console.error(text); };
-Module.preRun = Module.preRun || [];
-Module.postRun = Module.postRun || [];
-Module.canvas = (function(){ let c=document.getElementById('canvas'); c.addEventListener('webglcontextlost', e=>{alert('WebGL context lost. Reload.'); e.preventDefault();}); return c;})();
-Module.locateFile = function(path){ return './'+path; };
-Module.instantiateWasm = function(imports, successCallback){ fetch('./qemu-system-x86_64.wasm').then(r=>r.arrayBuffer()).then(b=>WebAssembly.instantiate(b, imports)).then(o=>successCallback(o.instance)).catch(err=>{console.error(err); throw err;}); return {}; };
-window.Module = Module;
-EOF
+          cat > qemu-wasm/htdocs/qemu-system-x86_64.js << 'EOF'
+            var Module = typeof Module !== 'undefined' ? Module : {};
+            Module.print = function(text) { if(arguments.length>1) text=Array.prototype.slice.call(arguments).join(' '); console.log(text); };
+            Module.printErr = function(text) { if(arguments.length>1) text=Array.prototype.slice.call(arguments).join(' '); console.error(text); };
+            Module.preRun = Module.preRun || [];
+            Module.postRun = Module.postRun || [];
+            Module.canvas = (function(){ let c=document.getElementById('canvas'); c.addEventListener('webglcontextlost', e=>{alert('WebGL context lost. Reload.'); e.preventDefault();}); return c;})();
+            Module.locateFile = function(path){ return './'+path; };
+            Module.instantiateWasm = function(imports, successCallback){ fetch('./qemu-system-x86_64.wasm').then(r=>r.arrayBuffer()).then(b=>WebAssembly.instantiate(b, imports)).then(o=>successCallback(o.instance)).catch(err=>{console.error(err); throw err;}); return {}; };
+            window.Module = Module;
+          EOF
 
       - name: Optimize WASM
         run: |
@@ -89,32 +89,55 @@ EOF
 
       - name: Create index.html
         run: |
-cat > dist/index.html << 'EOF'
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
-<title>Android-x86 9.0 QEMU/WASM</title>
-<style>
-body { background:#000; color:#0f0; text-align:center; font-family:system-ui; }
-canvas { border:3px solid #0f0; border-radius:12px; margin-top:20px; }
-button { font-size:16px; padding:10px 20px; margin-top:10px; cursor:pointer; }
-</style>
-<script src="./qemu-system-x86_64.js"></script>
-<script src="./load.js"></script>
-</head>
-<body>
-<h1>Android-x86 QEMU WebAssembly</h1>
-<canvas id="canvas" width="1024" height="768"></canvas>
-<button onclick="startVM()">Start Android</button>
-<script>
-function startVM() {
-  Module({ arguments:['-cpu','qemu64','-m','2048','-smp','4','-drive','file=/android-x86.iso,format=raw,readonly=on','-boot','d'] });
-}
-</script>
-</body>
-</html>
-EOF
+          cat > dist/index.html << 'EOF'
+            <!DOCTYPE html>
+            <html>
+            <head>
+            <meta charset="UTF-8">
+            <title>Android-x86 9.0 QEMU/WASM</title>
+            <style>
+            body { background:#000; color:#0f0; text-align:center; font-family:system-ui; }
+            canvas { border:3px solid #0f0; border-radius:12px; margin-top:20px; }
+            button { font-size:16px; padding:10px 20px; margin-top:10px; cursor:pointer; }
+            </style>
+            <script src="./qemu-system-x86_64.js"></script>
+            <script src="./load.js"></script>
+            </head>
+            <body>
+            <h1>Android-x86 QEMU WebAssembly</h1>
+            <canvas id="canvas" width="1024" height="768"></canvas>
+            <button onclick="startVM()">Start Android</button>
+            <script>
+            function startVM() {
+              Module({ arguments:['-cpu','qemu64','-m','2048','-smp','4','-drive','file=/android-x86.iso,format=raw,readonly=on','-boot','d'] });
+            }
+            </script>
+            </body>
+            </html>
+          EOF
 
       - name: Copy dist files
-        run
+        run: |
+          mkdir -p dist
+          # Copy HTML and all web assets from the qemu-wasm htdocs into dist
+          cp -r qemu-wasm/htdocs/* dist/ || true
+          # Make sure the JS file is present — if it's missing we'll fail later in the verification step
+          echo "dist contents:" && ls -la dist || true
+
+      - name: Verify dist contents
+        run: |
+          set -e
+          echo "Checking for dist/qemu-system-x86_64.js..."
+          if [ ! -f dist/qemu-system-x86_64.js ]; then
+            echo "ERROR: dist/qemu-system-x86_64.js is missing. Listing qemu-wasm/htdocs for debugging:"
+            ls -la qemu-wasm/htdocs || true
+            exit 1
+          fi
+          echo "qemu-system-x86_64.js found. Also listing dist:"
+          ls -la dist
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-wasm-dist
+          path: dist
