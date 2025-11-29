@@ -1,15 +1,13 @@
-name: Android-x86 QEMU WebAssembly (FIXED — JS Loader Included)
+name: Android-x86 QEMU WebAssembly (FIXED)
 
 on:
   push:
     branches: [ main, master ]
-  pull_request:
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
 
     steps:
       - name: Checkout
@@ -18,15 +16,9 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y curl jq binaryen python3 git make npm
+          sudo apt-get install -y curl jq binaryen python3 git make npm docker.io
 
-      - name: Install Docker
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y docker.io
-          sudo systemctl start docker
-
-      - name: Clone ktock/qemu-wasm
+      - name: Clone qemu-wasm
         run: |
           git clone --depth 1 https://github.com/ktock/qemu-wasm.git
           cd qemu-wasm
@@ -36,13 +28,13 @@ jobs:
         working-directory: qemu-wasm
         run: docker build -t qemu-wasm-builder .
 
-      - name: Download Android-x86 9.0-r2 ISO
+      - name: Download ISO
         run: |
           mkdir -p qemu-wasm/htdocs/images
           curl -L -# -o qemu-wasm/htdocs/images/android-x86.iso \
             https://osdn.net/dl/android-x86/android-x86_64-9.0-r2.iso
 
-      - name: Build QEMU inside container
+      - name: Build QEMU
         run: |
           docker run --rm -d --name qb \
             -v ${{ github.workspace }}/qemu-wasm:/qemu \
@@ -52,38 +44,33 @@ jobs:
           docker exec qb npm install xterm-pty
 
           docker exec qb bash -c '
-            EXTRA_CFLAGS="-O3 -g -Wno-error=unused-command-line-argument -matomics -mbulk-memory \
-            -DNDEBUG -DG_DISABLE_ASSERT -D_GNU_SOURCE -sASYNCIFY=1 -pthread -sPROXY_TO_PTHREAD=1 \
-            -sFORCE_FILESYSTEM -sALLOW_TABLE_GROWTH -sTOTAL_MEMORY=2300MB -sWASM_BIGINT \
-            -sMALLOC=mimalloc --js-library=/qemu/node_modules/xterm-pty/emscripten-pty.js \
-            -sEXPORT_ES6=1 -sASYNCIFY_IMPORTS=ffi_call_js"
+            EXTRA_CFLAGS="-O3 -g -matomics -mbulk-memory -DNDEBUG \
+            -DG_DISABLE_ASSERT -D_GNU_SOURCE -sASYNCIFY=1 -pthread \
+            -sPROXY_TO_PTHREAD=1 -sFORCE_FILESYSTEM -sALLOW_TABLE_GROWTH \
+            -sTOTAL_MEMORY=2300MB -sWASM_BIGINT -sMALLOC=mimalloc \
+            --js-library=/qemu/node_modules/xterm-pty/emscripten-pty.js"
 
             emconfigure /qemu/configure \
               --static --target-list=x86_64-softmmu --cpu=wasm32 \
-              --without-default-features --enable-system --with-coroutine=fiber --enable-virtfs \
-              --extra-cflags="$EXTRA_CFLAGS" --extra-cxxflags="$EXTRA_CFLAGS"
+              --without-default-features --enable-system --with-coroutine=fiber \
+              --enable-virtfs --extra-cflags="$EXTRA_CFLAGS" --extra-cxxflags="$EXTRA_CFLAGS"
 
             emmake make -j$(nproc) qemu-system-x86_64
           '
 
-      - name: Copy WASM + JS Loader (IMPORTANT FIX)
+      - name: Copy WASM + JS loader
         run: |
           docker exec qb bash -c '
             cd /qemu/build || cd /qemu
+            WASM=$(find . -name "qemu-system-x86_64.wasm" | head -n1)
+            JS=$(find . -name "qemu-system-x86_64.js" | head -n1)
 
-            WASM_FILE=$(find . -name "qemu-system-x86_64.wasm" -type f | head -n1)
-            JS_FILE=$(find . -name "qemu-system-x86_64.js" -type f | head -n1)
-
-            echo "Found WASM: $WASM_FILE"
-            echo "Found JS: $JS_FILE"
-
-            cp "$WASM_FILE" /qemu/htdocs/qemu-system-x86_64.wasm
-            cp "$JS_FILE"  /qemu/htdocs/qemu-system-x86_64.js
+            cp "$WASM" /qemu/htdocs/qemu-system-x86_64.wasm
+            cp "$JS"  /qemu/htdocs/qemu-system-x86_64.js
           '
-
           docker stop qb
 
-      - name: Build preload ISO data file
+      - name: Pack ISO
         run: |
           python3 qemu-wasm/emsdk/upstream/emscripten/tools/file_packager.py \
             qemu-wasm/htdocs/qemu.data \
@@ -93,11 +80,10 @@ jobs:
 
       - name: Optimize WASM
         run: |
-          wasm-opt -O3 --asyncify \
-            qemu-wasm/htdocs/qemu-system-x86_64.wasm \
+          wasm-opt -O3 --asyncify qemu-wasm/htdocs/qemu-system-x86_64.wasm \
             -o qemu-wasm/htdocs/qemu-system-x86_64.wasm
 
-      - name: Create final index.html
+      - name: Create index.html
         run: |
           mkdir -p dist
           cat > dist/index.html <<'EOF'
@@ -111,50 +97,49 @@ jobs:
   canvas{max-width:100%;border:4px solid #0f0;border-radius:12px}
   button{font-size:20px;padding:15px;margin:10px;background:#0f0;color:#000}
 </style>
-<script src="./qemu-system-x86_64.js"></script>
-<script src="./load.js"></script>
+<script src="qemu-system-x86_64.js"></script>
+<script src="load.js"></script>
 </head>
 <body>
 <h1>Android-x86 9.0-r2 in Browser</h1>
-<canvas id="canvas"></canvas><br>
-<button id="start">Start Android</button>
+<canvas id="canvas"></canvas>
+<br><button id="start">Start</button>
 <button id="stop" disabled>Stop</button>
 <script>
-start.onclick = () => {
+start.onclick=()=>{
   Module({
-    canvas: document.getElementById("canvas"),
-    arguments: [
+    canvas:canvas,
+    arguments:[
       "-cpu","qemu64,+ssse3,+sse4.2,+popcnt",
       "-m","2048","-smp","4",
       "-device","virtio-gpu-pci",
       "-device","virtio-keyboard-pci",
       "-device","virtio-mouse-pci",
       "-drive","if=none,id=cdrom,format=raw,readonly=on,file=/android-x86.iso",
-      "-device","ide-cd,drive=cdrom,bootindex=0",
-      "-boot","d"
+      "-device","ide-cd,drive=cdrom,bootindex=0","-boot","d"
     ]
   });
-  start.disabled = true;
-  stop.disabled = false;
+  start.disabled=true;
+  stop.disabled=false;
 };
-stop.onclick = () => {
+stop.onclick=()=>{
   Module?.stop?.();
-  start.disabled = false;
-  stop.disabled = true;
+  start.disabled=false;
+  stop.disabled=true;
 };
 </script>
 </body>
 </html>
 EOF
 
-      - name: Package final files
+      - name: Copy emulator files
         run: |
           cp -r qemu-wasm/htdocs/* dist/
           ls -lh dist/
           du -sh dist/
 
-      - name: Upload emulator
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: android-x86-9-qemu-wasm-emulator
+          name: android-x86-wasm
           path: dist/
