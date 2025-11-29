@@ -67,7 +67,15 @@ jobs:
           docker exec qb sh -c '
             WASM=$(find /qemu -name "*.wasm" | head -n1)
             cp "$WASM" /qemu/htdocs/qemu-system-x86_64.wasm
+            # If emscripten also produced a JS "glue" file next to the .wasm, copy it
+            JS_GLUED=$(dirname "$WASM")/$(basename "$WASM" .wasm).js
+            if [ -f "$JS_GLUED" ]; then
+              cp "$JS_GLUED" /qemu/htdocs/qemu-system-x86_64.js
+            fi
           '
+
+          # Log any JS files found in the build root so we can detect if a wrapper was produced
+          docker exec qb sh -c 'echo "== .js files produced in /qemu =="; find /qemu -path "*/node_modules/*" -prune -o -name "*.js" -print -exec ls -la {} \; || true'
 
           docker exec qb python3 /emsdk/upstream/emscripten/tools/file_packager.py \
             /qemu/htdocs/qemu.data \
@@ -78,7 +86,12 @@ jobs:
 
       - name: Generate qemu-system-x86_64.js
         run: |
-          cat > qemu-wasm/htdocs/qemu-system-x86_64.js << 'EOF'
+          # If an emscripten-generated wrapper was not already copied into htdocs,
+          # write a minimal stub that instantiates the WASM with fetch().
+          if [ -f qemu-wasm/htdocs/qemu-system-x86_64.js ] && [ $(stat -c%s qemu-wasm/htdocs/qemu-system-x86_64.js) -gt 2048 ]; then
+            echo "Found an emscripten-generated JS wrapper at qemu-wasm/htdocs/qemu-system-x86_64.js — keeping it."
+          else
+            cat > qemu-wasm/htdocs/qemu-system-x86_64.js << 'EOF'
             var Module = typeof Module !== 'undefined' ? Module : {};
             Module.print = function(text) { if(arguments.length>1) text=Array.prototype.slice.call(arguments).join(' '); console.log(text); };
             Module.printErr = function(text) { if(arguments.length>1) text=Array.prototype.slice.call(arguments).join(' '); console.error(text); };
@@ -89,6 +102,13 @@ jobs:
             Module.instantiateWasm = function(imports, successCallback){ fetch('./qemu-system-x86_64.wasm').then(r=>r.arrayBuffer()).then(b=>WebAssembly.instantiate(b, imports)).then(o=>successCallback(o.instance)).catch(err=>{console.error(err); throw err;}); return {}; };
             window.Module = Module;
           EOF
+          fi
+
+          # Debugging info — show file sizes and first lines
+          echo "qemu-system-x86_64.js size:" && stat -c "%s bytes" qemu-wasm/htdocs/qemu-system-x86_64.js || true
+          echo "load.js size:" && stat -c "%s bytes" qemu-wasm/htdocs/load.js || true
+          echo "qemu.data size:" && stat -c "%s bytes" qemu-wasm/htdocs/qemu.data || true
+          echo "---- qemu-system-x86_64.js head ----" && head -n 20 qemu-wasm/htdocs/qemu-system-x86_64.js || true
 
       - name: Optimize WASM
         run: |
@@ -144,6 +164,12 @@ jobs:
           fi
           echo "qemu-system-x86_64.js found. Also listing dist:"
           ls -la dist
+          # Additional validation: make sure JS is not tiny. If it is, print warning and show the head to help debugging.
+          JS_SIZE=$(stat -c%s dist/qemu-system-x86_64.js)
+          if [ "$JS_SIZE" -lt 10240 ]; then
+            echo "WARNING: qemu-system-x86_64.js seems small ($JS_SIZE bytes). Showing head for debugging:"
+            head -n 40 dist/qemu-system-x86_64.js || true
+          fi
 
       - name: Upload dist artifact
         uses: actions/upload-artifact@v4
