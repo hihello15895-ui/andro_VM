@@ -1,10 +1,10 @@
-name: Android-x86 QEMU WebAssembly (FINAL FIXED BUILD)
+name: Android-x86 QEMU WebAssembly Build
 
 on:
+  workflow_dispatch:
   push:
     branches: [ main, master ]
   pull_request:
-  workflow_dispatch:
 
 jobs:
   build:
@@ -15,18 +15,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install tools
+      - name: Install dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y curl jq python3 make git npm binaryen
 
       - name: Install Docker
         run: |
-          sudo apt-get update -qq
           sudo apt-get install -y ca-certificates gnupg lsb-release
           sudo mkdir -p /etc/apt/keyrings
-          curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-            | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
           echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
             | sudo tee /etc/apt/sources.list.d/docker.list
           sudo apt-get update -qq
@@ -39,7 +37,7 @@ jobs:
           cd qemu-wasm
           git submodule update --init --depth 1
 
-      - name: Build Docker Image
+      - name: Build Docker image
         working-directory: qemu-wasm
         run: docker build -t qemu-wasm-builder .
 
@@ -52,26 +50,24 @@ jobs:
       - name: Build QEMU inside container
         run: |
           docker run --rm -d --name qb \
-            -v ${{ github.workspace }}/qemu-wasm:/qemu \
+            -v "${{ github.workspace }}/qemu-wasm:/qemu" \
             -w /qemu qemu-wasm-builder tail -f /dev/null
 
           docker exec qb npm install xterm-pty
 
           docker exec qb sh -c '
-            EXTRA_CFLAGS="-O3 -g -matomics -mbulk-memory -sASYNCIFY=1 -pthread -sPROXY_TO_PTHREAD=1 -sWASM_BIGINT -DNDEBUG"
+            EXTRA_CFLAGS="-O3 -g -matomics -mbulk-memory -sASYNCIFY=1 -pthread -sWASM_BIGINT -DNDEBUG"
             emconfigure ./configure \
               --static --target-list=x86_64-softmmu --cpu=wasm32 \
-              --extra-cflags="$EXTRA_CFLAGS" --extra-ldflags="-sALLOW_TABLE_GROWTH"
+              --extra-cflags="$EXTRA_CFLAGS"
             emmake make -j$(nproc)
           '
 
-          echo "Copying WASM"
-          docker exec qb bash -c "
-            WASM=\$(find /qemu -name '*.wasm' | head -n1)
-            cp \$WASM /qemu/htdocs/qemu-system-x86_64.wasm
-          "
+          docker exec qb sh -c '
+            WASM_FILE=$(find /qemu -name "*.wasm" | head -n 1)
+            cp "$WASM_FILE" /qemu/htdocs/qemu-system-x86_64.wasm
+          '
 
-          echo "Packing ISO as qemu.data"
           docker exec qb python3 /emsdk/upstream/emscripten/tools/file_packager.py \
             /qemu/htdocs/qemu.data \
             --preload /qemu/htdocs/images/android-x86.iso@/android-x86.iso \
@@ -79,7 +75,7 @@ jobs:
 
           docker stop qb
 
-      - name: Generate FULL qemu-system-x86_64.js
+      - name: Generate qemu-system-x86_64.js
         run: |
           cat > qemu-wasm/htdocs/qemu-system-x86_64.js << 'EOF'
 var Module = typeof Module !== 'undefined' ? Module : {};
@@ -97,7 +93,7 @@ Module.printErr = function (text) {
 Module.preRun = Module.preRun || [];
 Module.postRun = Module.postRun || [];
 
-Module.canvas = (() => {
+Module.canvas = (function () {
   let c = document.getElementById("canvas");
   c.addEventListener("webglcontextlost", (e) => {
     alert("WebGL context lost. Reload page.");
@@ -106,11 +102,13 @@ Module.canvas = (() => {
   return c;
 })();
 
-Module.locateFile = f => "./" + f;
+Module.locateFile = function (file) {
+  return "./" + file;
+};
 
 Module.instantiateWasm = function (imports, successCallback) {
   fetch("qemu-system-x86_64.wasm")
-    .then(r => r.arrayBuffer())
+    .then(response => response.arrayBuffer())
     .then(bytes => WebAssembly.instantiate(bytes, imports))
     .then(result => successCallback(result.instance))
     .catch(err => { console.error(err); throw err; });
@@ -122,22 +120,22 @@ EOF
 
       - name: Optimize WASM
         run: |
-          WASM=$(ls qemu-wasm/htdocs/*.wasm | head -n1)
+          WASM=$(ls qemu-wasm/htdocs/*.wasm | head -n 1)
           wasm-opt -O3 --asyncify "$WASM" -o "$WASM.opt"
           mv "$WASM.opt" "$WASM"
 
-      - name: Build final index.html
+      - name: Create index.html
         run: |
           mkdir -p dist
-          cat > dist/index.html << 'HTML'
+          cat > dist/index.html << 'EOF'
 <!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
 <title>Android-x86 9.0 QEMU/WASM</title>
 <style>
-body{margin:0;background:#000;color:#0f0;text-align:center;font-family:system-ui}
-canvas{border:3px solid #0f0;border-radius:12px;margin-top:20px}
+body { background:#000; color:#0f0; text-align:center; font-family:system-ui; }
+canvas { border:3px solid #0f0; border-radius:12px; margin-top:20px; }
 </style>
 <script src="./qemu-system-x86_64.js"></script>
 <script src="./load.js"></script>
@@ -146,23 +144,30 @@ canvas{border:3px solid #0f0;border-radius:12px;margin-top:20px}
 <h1>Android-x86 QEMU (WebAssembly)</h1>
 <canvas id="canvas" width="1024" height="768"></canvas>
 
-<button onclick="Module(arguments=[
-'-cpu','qemu64','-m','2048','-smp','4',
-'-drive','file=/android-x86.iso,format=raw,readonly=on',
-'-boot','d'
-])">Start</button>
+<button onclick="startVM()">Start Android</button>
 
+<script>
+function startVM() {
+  Module({
+    arguments: [
+      '-cpu','qemu64','-m','2048','-smp','4',
+      '-drive','file=/android-x86.iso,format=raw,readonly=on',
+      '-boot','d'
+    ]
+  });
+}
+</script>
 </body>
 </html>
-HTML
+EOF
 
-      - name: Copy Build Files
+      - name: Copy final build
         run: |
           cp -r qemu-wasm/htdocs/* dist/
           ls -lh dist/
           du -sh dist/
 
-      - name: Upload Artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: android-x86-qemu-wasm-emulator
