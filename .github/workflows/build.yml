@@ -13,10 +13,10 @@ jobs:
     timeout-minutes: 140
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install tools
+      - name: Install dependencies
         run: |
           sudo apt update -qq
           sudo apt install -y curl jq binaryen python3 git make npm docker.io pigz
@@ -32,18 +32,19 @@ jobs:
         working-directory: qemu-wasm
         run: docker build -t qemu-wasm .
 
-      - name: Download Android-x86 ISO
+      - name: Download Android-x86 9.0-r2 ISO
         run: |
           mkdir -p qemu-wasm/htdocs/images
           curl -L -# https://osdn.net/dl/android-x86/android-x86_64-9.0-r2.iso \
                -o qemu-wasm/htdocs/images/android-x86.iso
 
-      - name: Build QEMU to Full 11–13 MB JS
-        env:
-          WORKSPACE: ${{ github.workspace }}
+      - name: Build QEMU → Full 11–13 MB JS
         run: |
+          # Fix for GitHub YAML parser: expand the path in a variable first
+          WORKDIR="${{ github.workspace }}/qemu-wasm"
+
           docker run --rm -d --name qb \
-            -v "$WORKSPACE/qemu-wasm":/qemu \
+            -v "$WORKDIR":/qemu \
             -w /qemu \
             qemu-wasm tail -f /dev/null
 
@@ -105,7 +106,7 @@ jobs:
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Android-x86 9 × QEMU/WASM</title>
+<title>Android-x86 9.0-r2 × QEMU/WASM</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
   body{margin:0;background:#000;color:#0f0;font-family:system-ui;text-align:center;padding:20px}
@@ -118,7 +119,7 @@ jobs:
 </head>
 <body>
 <h1>Android-x86 9.0-r2 in Browser</h1>
-<p>First boot: 60–90 seconds – please wait!</p>
+<p>First boot takes 60–90 seconds — please wait!</p>
 <canvas id="canvas"></canvas><br>
 <button id="start">Start Android</button>
 <button id="stop" disabled>Stop</button>
@@ -147,7 +148,7 @@ document.getElementById('stop').onclick=()=>location.reload();
 </html>
 EOF
 
-      - name: Package & verify
+      - name: Package and verify
         run: |
           cp -r qemu-wasm/htdocs/* dist/
           echo "Final build:"
@@ -155,10 +156,10 @@ EOF
 
           JS_SIZE=$(stat -c%s dist/qemu-system-x86_64.js 2>/dev/null || echo 0)
           if [ "$JS_SIZE" -lt 8000000 ]; then
-            echo "ERROR: JS too small → build failed"
+            echo "ERROR: JS file too small ($JS_SIZE bytes) → build failed"
             exit 1
           fi
-          echo "SUCCESS! JS size = $(numfmt --to=iec-iB $JS_SIZE 2>/dev/null || echo $JS_SIZE B)"
+          echo "SUCCESS! JS size = $(numfmt --to=iec-iB $JS_SIZE 2>/dev/null || echo $JS_SIZE)"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
