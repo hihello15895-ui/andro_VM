@@ -1,5 +1,5 @@
 # .github/workflows/android-qemu-wasm.yml
-name: Android-x86 QEMU/WASM (Working 2025)
+name: Android-x86 QEMU/WASM (Working Dec 2025)
 
 on:
   push:
@@ -38,16 +38,17 @@ jobs:
           curl -L -# https://osdn.net/dl/android-x86/android-x86_64-9.0-r2.iso \
                -o qemu-wasm/htdocs/images/android-x86.iso
 
-      - name: Build QEMU → Full 11–13 MB JS
+      - name: Build QEMU to Full 11–13 MB JS
+        env:
+          WORKSPACE: ${{ github.workspace }}
         run: |
           docker run --rm -d --name qb \
-            -v "${{ github.workspace }}/qemu-wasm":/qemu \
+            -v "$WORKSPACE/qemu-wasm":/qemu \
             -w /qemu \
             qemu-wasm tail -f /dev/null
 
           docker exec qb npm install xterm-pty >/dev/null 2>&1 || true
 
-          # Compile QEMU
           docker exec qb bash -c '
             set -e
             emconfigure ./configure \
@@ -60,7 +61,6 @@ jobs:
             emmake make -j$(nproc) qemu-system-x86_64
           '
 
-          # Generate real big .js file
           docker exec qb bash -c '
             set -e
             cd build 2>/dev/null || cd .
@@ -83,7 +83,6 @@ jobs:
             cp *.worker.js /qemu/htdocs/ 2>/dev/null || true
           '
 
-          # Bundle ISO
           docker exec qb python3 /emsdk/upstream/emscripten/tools/file_packager.py \
             /qemu/htdocs/qemu.data \
             --preload /qemu/htdocs/images/android-x86.iso@/android-x86.iso \
@@ -106,7 +105,7 @@ jobs:
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Android-x86 9.0-r2 × QEMU/WASM</title>
+<title>Android-x86 9 × QEMU/WASM</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
   body{margin:0;background:#000;color:#0f0;font-family:system-ui;text-align:center;padding:20px}
@@ -119,7 +118,7 @@ jobs:
 </head>
 <body>
 <h1>Android-x86 9.0-r2 in Browser</h1>
-<p>First boot: 60–90 seconds — please wait!</p>
+<p>First boot: 60–90 seconds – please wait!</p>
 <canvas id="canvas"></canvas><br>
 <button id="start">Start Android</button>
 <button id="stop" disabled>Stop</button>
@@ -148,17 +147,18 @@ document.getElementById('stop').onclick=()=>location.reload();
 </html>
 EOF
 
-      - name: Package & verify size
+      - name: Package & verify
         run: |
           cp -r qemu-wasm/htdocs/* dist/
+          echo "Final build:"
           ls -lh dist/
 
           JS_SIZE=$(stat -c%s dist/qemu-system-x86_64.js 2>/dev/null || echo 0)
           if [ "$JS_SIZE" -lt 8000000 ]; then
-            echo "ERROR: JS file too small ($JS_SIZE bytes)"
+            echo "ERROR: JS too small → build failed"
             exit 1
           fi
-          echo "SUCCESS! JS size = $(numfmt --to=iec-iB $JS_SIZE 2>/dev/null || echo $JS_SIZE)"
+          echo "SUCCESS! JS size = $(numfmt --to=iec-iB $JS_SIZE 2>/dev/null || echo $JS_SIZE B)"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
