@@ -34,10 +34,10 @@ jobs:
       - name: Download Android-x86 ISO
         run: |
           mkdir -p qemu-wasm/htdocs/images
-          curl -L -# https://osdn.net/dl/android-x86/android-x86_64-9.0-r2.iso \
-               -o qemu-wasm/htdocs/images/android-x86.iso
+          curl -L https://osdn.net/dl/android-x86/android-x86_64-9.0-r2.iso \
+            -o qemu-wasm/htdocs/images/android-x86.iso
 
-      - name: Build QEMU + Generate JS
+      - name: Build QEMU + WASM + JS
         run: |
           docker run --rm -d --name qb \
             -v ${{ github.workspace }}/qemu-wasm:/qemu \
@@ -46,7 +46,6 @@ jobs:
 
           docker exec qb npm install xterm-pty
 
-          # 1. Compile QEMU
           docker exec qb sh -c "
             emconfigure ./configure \
               --target-list=x86_64-softmmu \
@@ -58,10 +57,9 @@ jobs:
             emmake make -j$(nproc) qemu-system-x86_64
           "
 
-          # 2. Generate REAL 10-12MB JS
           docker exec qb sh -c "
-            cd build || cd .
-            WASM_FILE=\$(find . -name 'qemu-system-x86_64.wasm' -type f | head -n1)
+            cd build || exit 1
+            WASM_FILE=\$(find . -name 'qemu-system-x86_64.wasm' | head -n1)
             emcc \"\$WASM_FILE\" \
               -O3 \
               -sASYNCIFY=1 \
@@ -78,10 +76,9 @@ jobs:
               -o /qemu/htdocs/qemu-system-x86_64.js
 
             cp *.worker.js /qemu/htdocs/ 2>/dev/null || true
-            echo 'Files in htdocs:' && ls -lh /qemu/htdocs/
+            ls -lh /qemu/htdocs/
           "
 
-          # 3. Bundle ISO
           docker exec qb python3 /emsdk/upstream/emscripten/tools/file_packager.py \
             /qemu/htdocs/qemu.data \
             --preload /qemu/htdocs/images/android-x86.iso@/android-x86.iso \
@@ -98,16 +95,16 @@ jobs:
       - name: Create index.html
         run: |
           mkdir -p dist
-          cat > dist/index.html <<'EOF'
+          cat << 'EOF' > dist/index.html
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
   <title>Android-x86 9.0-r2 in Browser</title>
   <style>
-    body{margin:0;background:#000;color:#0f0;font-family:system-ui;text-align:center;padding:20px}
-    canvas{max-width:100%;image-rendering:pixelated;border:4px solid #0f0;border-radius:12px}
-    button{font-size:20px;padding:15px 30px;margin:10px;background:#0f0;color:#000;border:none;border-radius:8px;cursor:pointer}
+    body { margin:0; background:#000; color:#0f0; font-family:system-ui; text-align:center; padding:20px }
+    canvas { max-width:100%; image-rendering:pixelated; border:4px solid #0f0; border-radius:12px }
+    button { font-size:20px; padding:15px 30px; margin:10px; background:#0f0; color:#000; border:none; border-radius:8px; cursor:pointer }
   </style>
   <script src="./qemu-system-x86_64.js"></script>
   <script src="./load.js"></script>
@@ -117,31 +114,31 @@ jobs:
   <canvas id="canvas"></canvas><br>
   <button id="start">Start Android</button>
   <button id="stop" disabled>Stop</button>
-  <p>First boot takes 60–90 seconds — please wait!</p>
+  <p>First boot may take 60–90 seconds...</p>
 
   <script>
     let qemu = null;
-    document.getElementById('start').onclick = async () => {
+    document.getElementById("start").onclick = async () => {
       qemu = await createQemuModule({
-        canvas: document.getElementById('canvas'),
+        canvas: document.getElementById("canvas"),
         arguments: [
-          '-cpu', 'qemu64,+ssse3,+sse4.2,+popcnt',
-          '-m', '2048',
-          '-smp', '4',
-          '-device', 'virtio-gpu-pci',
-          '-device', 'virtio-keyboard-pci',
-          '-device', 'virtio-mouse-pci',
-          '-drive', 'if=none,id=cdrom,format=raw,readonly=on,file=/android-x86.iso',
-          '-device', 'ide-cd,drive=cdrom,bootindex=0',
-          '-boot', 'd'
+          "-cpu", "qemu64,+ssse3,+sse4.2,+popcnt",
+          "-m", "2048",
+          "-smp", "4",
+          "-device", "virtio-gpu-pci",
+          "-device", "virtio-keyboard-pci",
+          "-device", "virtio-mouse-pci",
+          "-drive", "if=none,id=cdrom,format=raw,readonly=on,file=/android-x86.iso",
+          "-device", "ide-cd,drive=cdrom,bootindex=0",
+          "-boot", "d"
         ]
       });
 
-      document.getElementById('start').disabled = true;
-      document.getElementById('stop').disabled = false;
+      document.getElementById("start").disabled = true;
+      document.getElementById("stop").disabled = false;
     };
 
-    document.getElementById('stop').onclick = () => location.reload();
+    document.getElementById("stop").onclick = () => location.reload();
   </script>
 </body>
 </html>
@@ -152,17 +149,16 @@ EOF
           cp -r qemu-wasm/htdocs/* dist/
           echo "FINAL BUILD FILES:"
           ls -lh dist/
-          JS_SIZE=$(stat -c%s dist/qemu-system-x86_64.js 2>/dev/null || echo 0)
+          JS_SIZE=$(stat -c%s dist/qemu-system-x86_64.js || echo 0)
           if [ "$JS_SIZE" -lt 7000000 ]; then
-            echo "ERROR: qemu-system-x86_64.js is too small ($JS_SIZE bytes)"
+            echo "ERROR: JS too small ($JS_SIZE bytes)"
             exit 1
           fi
-          echo "SUCCESS! JS file size = $(numfmt --to=iec-iB $JS_SIZE 2>/dev/null || echo $JS_SIZE bytes)"
-          du -sh dist/
+          echo "SUCCESS! JS size OK"
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: android-x86-wasm-emulator
           path: dist/
-          retention-days: 90
+          retention-days: 30
