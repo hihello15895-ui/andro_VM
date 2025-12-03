@@ -92,10 +92,10 @@ jobs:
           wasm-opt -O3 --asyncify qemu-wasm/htdocs/qemu-system-x86_64.wasm \
             -o qemu-wasm/htdocs/qemu-system-x86_64.wasm
 
-      - name: Create index.html
+            - name: Create index.html
         run: |
           mkdir -p dist
-          cat << 'EOF' > dist/index.html
+cat << 'EOF' > dist/index.html
 <!DOCTYPE html>
 <html>
 <head>
@@ -115,7 +115,6 @@ jobs:
   <button id="start">Start Android</button>
   <button id="stop" disabled>Stop</button>
   <p>First boot may take 60–90 seconds...</p>
-
   <script>
     let qemu = null;
     document.getElementById("start").onclick = async () => {
@@ -133,16 +132,15 @@ jobs:
           "-boot", "d"
         ]
       });
-
       document.getElementById("start").disabled = true;
       document.getElementById("stop").disabled = false;
     };
-
     document.getElementById("stop").onclick = () => location.reload();
   </script>
 </body>
 </html>
 EOF
+
 
       - name: Package & Final Check
         run: |
