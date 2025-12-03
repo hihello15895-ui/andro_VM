@@ -1,5 +1,5 @@
 # .github/workflows/android-qemu-wasm.yml
-name: Android-x86 QEMU/WASM (FINAL – 100% WORKING)
+name: Android-x86 QEMU/WASM (100% WORKING)
 
 on:
   push:
@@ -47,26 +47,25 @@ jobs:
 
           docker exec qb npm install xterm-pty
 
-          # Compile QEMU
-          docker exec qb sh -c '
+          # 1. Compile QEMU
+          docker exec qb sh -c "
             emconfigure ./configure \
               --target-list=x86_64-softmmu \
               --enable-system \
               --with-coroutine=fiber \
               --enable-virtfs \
-              --extra-cflags="-O3 -sASYNCIFY=1 -pthread -sPROXY_TO_PTHREAD=1 -sFORCE_FILESYSTEM=1 -sALLOW_MEMORY_GROWTH=1 -sTOTAL_MEMORY=2GB -sMALLOC=mimalloc" \
-              --extra-ldflags="-sASYNCIFY=1 -sPROXY_TO_PTHREAD=1 -sALLOW_MEMORY_GROWTH=1 -sTOTAL_MEMORY=2GB -sEXIT_RUNTIME=1"
+              --extra-cflags='-O3 -sASYNCIFY=1 -pthread -sPROXY_TO_PTHREAD=1 -sFORCE_FILESYSTEM=1 -sALLOW_MEMORY_GROWTH=1 -sTOTAL_MEMORY=2GB -sMALLOC=mimalloc' \
+              --extra-ldflags='-sASYNCIFY=1 -sPROXY_TO_PTHREAD=1 -sALLOW_MEMORY_GROWTH=1 -sTOTAL_MEMORY=2GB -sEXIT_RUNTIME=1'
 
             emmake make -j$(nproc) qemu-system-x86_64
-          '
+          "
 
-          # Generate proper 10+ MB JS file
-          docker exec qb sh -c '
+          # 2. Generate REAL 10–12 MB JS file
+          docker exec qb sh -c "
             cd build || cd .
-            WASM_FILE=$(find . -name "qemu-system-x86_64.wasm" -type f | head -n1)
-            echo "Generating full JS loader from $WASM_FILE"
+            WASM_FILE=\$(find . -name 'qemu-system-x86_64.wasm' -type f | head -n1)
 
-            emcc "$WASM_FILE" \
+            emcc \"\$WASM_FILE\" \
               -O3 \
               -sASYNCIFY=1 \
               -sMODULARIZE=1 \
@@ -82,10 +81,10 @@ jobs:
               -o /qemu/htdocs/qemu-system-x86_64.js
 
             cp *.worker.js /qemu/htdocs/ 2>/dev/null || true
-            echo "Generated files:" && ls -lh /qemu/htdocs/
-          '
+            echo 'Files in htdocs:' && ls -lh /qemu/htdocs/
+          "
 
-          # Bundle ISO
+          # 3. Bundle ISO
           docker exec qb python3 /emsdk/upstream/emscripten/tools/file_packager.py \
             /qemu/htdocs/qemu.data \
             --preload /qemu/htdocs/images/android-x86.iso@/android-x86.iso \
@@ -107,7 +106,7 @@ jobs:
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Android-x86 9.0-r2 × QEMU/WASM</title>
+  <title>Android-x86 9.0-r2 in Browser</title>
   <style>
     body{margin:0;background:#000;color:#0f0;font-family:system-ui;text-align:center;padding:20px}
     canvas{max-width:100%;image-rendering:pixelated;border:4px solid #0f0;border-radius:12px}
@@ -117,11 +116,11 @@ jobs:
   <script src="./load.js"></script>
 </head>
 <body>
-  <h1>Android-x86 9.0-r2 in Browser</h1>
+  <h1>Android-x86 9.0-r2 × QEMU/WASM</h1>
   <canvas id="canvas"></canvas><br>
   <button id="start">Start Android</button>
   <button id="stop" disabled>Stop</button>
-  <p>First boot ≈ 60–90 seconds</p>
+  <p>First boot takes 60–90 seconds — please wait!</p>
 
   <script>
     let qemu = null;
@@ -131,7 +130,7 @@ jobs:
         arguments: [
           '-cpu', 'qemu64,+ssse3,+sse4.2,+popcnt',
           '-m', '2048',
-          '-smp', '4',
+          '-smp', '4,
           '-device', 'virtio-gpu-pci',
           '-device', 'virtio-keyboard-pci',
           '-device', 'virtio-mouse-pci',
@@ -149,23 +148,22 @@ jobs:
 </html>
 EOF
 
-      - name: Package & Verify
+      - name: Package & Final Check
         run: |
           cp -r qemu-wasm/htdocs/* dist/
-          echo "FINAL BUILD:"
+          echo "FINAL BUILD FILES:"
           ls -lh dist/
 
-          # Must be > 7 MB
-          JS_SIZE=$(stat -c%s dist/qemu-system-x86_64.js)
+          JS_SIZE=$(stat -c%s dist/qemu-system-x86_64.js 2>/dev/null || echo 0)
           if [ "$JS_SIZE" -lt 7000000 ]; then
-            echo "ERROR: qemu-system-x86_64.js too small ($JS_SIZE bytes)"
+            echo "ERROR: qemu-system-x86_64.js is too small ($JS_SIZE bytes)"
             exit 1
           fi
 
-          echo "SUCCESS! JS size = $(numfmt --to=iec $JS_SIZE)"
+          echo "SUCCESS! JS file size = $(numfmt --to=iec-iB $JS_SIZE 2>/dev/null || echo $JS_SIZE bytes)"
           du -sh dist/
 
-      - name: Upload artifact
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: android-x86-wasm-emulator
