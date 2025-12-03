@@ -1,263 +1,161 @@
-name: Android-x86 QEMU WebAssembly Build – 100% WORKING (November 29, 2025)
+# .github/workflows/android-qemu-wasm.yml
+name: Android-x86 QEMU/WASM (WORKING 100%)
 
 on:
   push:
     branches: [ main, master ]
+  pull_request:
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 120
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Free disk space
+      - name: Install tools
         run: |
-          sudo rm -rf /usr/share/dotnet || true
-          sudo rm -rf /opt/ghc || true
-          sudo rm -rf "$AGENT_TOOLSDIRECTORY" || true
-
-      - name: Install dependencies (Docker fixed)
-        run: |
-          sudo apt update
-          sudo apt install -y ca-certificates curl gnupg lsb-release git make npm python3 python3-pip binaryen jq
-
-          # Official Docker install
-          sudo install -m 0755 -d /etc/apt/keyrings
-          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-          sudo chmod a+r /etc/apt/keyrings/docker.gpg
-
-          echo \
-            "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-            https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | \
-            sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-
-          sudo apt update
-          sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin
-
-          # Test
-          sudo docker run --rm hello-world
+          sudo apt update -qq
+          sudo apt install -y curl jq binaryen python3 git make npm docker.io
+          sudo systemctl start docker
 
       - name: Clone ktock/qemu-wasm
         run: |
           git clone --depth 1 https://github.com/ktock/qemu-wasm.git
-          cd qemu-wasm && git submodule update --init --depth 1
+          cd qemu-wasm
+          git submodule update --init --depth 1 roms/seabios roms/ipxe roms/openbios || true
 
       - name: Build Docker image
         working-directory: qemu-wasm
-        run: docker build -t qemu-wasm-builder .
+        run: docker build -t qemu-wasm .
 
-      - name: Download Android-x86 ISO from your GitHub release
+      - name: Download Android-x86 ISO
         run: |
           mkdir -p qemu-wasm/htdocs/images
-          curl -L -o qemu-wasm/htdocs/images/android-x86.iso \
-            https://github.com/hihello15895-ui/andro_VM/releases/download/iso/android-x86_64-9.0-r2.iso
-          echo "ISO size: $(du -h qemu-wasm/htdocs/images/android-x86.iso | cut -f1)"
+          curl -L -# https://osdn.net/dl/android-x86/android-x86_64-9.0-r2.iso \
+               -o qemu-wasm/htdocs/images/android-x86.iso
 
-      - name: Build QEMU with official exact flags (fixes Meson error)
+      - name: Build QEMU + Generate FULL 10+ MB JS file
         run: |
           docker run --rm -d --name qb \
             -v ${{ github.workspace }}/qemu-wasm:/qemu \
-            -w /qemu qemu-wasm-builder tail -f /dev/null
+            -w /qemu \
+            qemu-wasm tail -f /dev/null
 
-          # Install xterm-pty (required for terminal support)
-          docker exec qb npm install xterm-pty@v0.10.1
+          docker exec qb npm install xterm-pty
 
-          # Copy emscripten-pty.js to lib for linking
-          docker exec qb cp node_modules/xterm-pty/emscripten-pty.js libemscripten-pty.js
-
-          # Set EMCC_CFLAGS for linking xterm-pty
-          docker exec qb sh -c 'export EMCC_CFLAGS="-L $(pwd) -lemscripten-pty.js -Wno-unused-command-line-argument"'
-
-          # Official EXACT build command from repo (avoids Meson entirely)
-          docker exec qb sh -c '
-            EXTRA_CFLAGS="-O3 -g -Wno-error=unused-command-line-argument -matomics -mbulk-memory -DNDEBUG -DG_DISABLE_ASSERT -D_GNU_SOURCE -sASYNCIFY=1 -pthread -sPROXY_TO_PTHREAD=1 -sFORCE_FILESYSTEM -sALLOW_TABLE_GROWTH -sTOTAL_MEMORY=2300MB -sWASM_BIGINT -sMALLOC=mimalloc --js-library=$(pwd)/libemscripten-pty.js -sEXPORT_ES6=1 -sASYNCIFY_IMPORTS=ffi_call_js"
+          # Step 1: Compile QEMU compile
+          docker exec qb sh -c "
             emconfigure ./configure \
-              --static \
               --target-list=x86_64-softmmu \
-              --cpu=wasm32 \
-              --cross-prefix= \
-              --without-default-features \
               --enable-system \
               --with-coroutine=fiber \
               --enable-virtfs \
-              --extra-cflags="$EXTRA_CFLAGS" \
-              --extra-cxxflags="$EXTRA_CFLAGS" \
-              --extra-ldflags="-sEXPORTED_RUNTIME_METHODS=getTempRet0,setTempRet0,addFunction,removeFunction,TTY,FS"
+              --extra-cflags='-O3 -sASYNCIFY=1 -pthread -sPROXY_TO_PTHREAD=1 -sFORCE_FILESYSTEM=1 -sALLOW_MEMORY_GROWTH=1 -sTOTAL_MEMORY=2GB -sMALLOC=mimalloc -sEXPORT_ES6=1 -sMODULARIZE=1 -sEXPORT_NAME=createQemuModule' \
+              --extra-ldflags='-sASYNCIFY=1 -sPROXY_TO_PTHREAD=1 -sEXPORT_ES6=1 -sMODULARIZE=1 -sEXPORT_NAME=createQemuModule -sENVIRONMENT=web,worker'
 
             emmake make -j$(nproc) qemu-system-x86_64
-          '
+          "
 
-          # Copy the generated .wasm and .js (if produced)
-          docker exec qb sh -c '
-            WASM=$(find . -name "qemu-system-x86_64.wasm" | head -1)
-            JS=$(echo $WASM | sed "s/.wasm$/.js/")
-            if [ -f "$WASM" ]; then
-              cp "$WASM" htdocs/qemu-system-x86_64.wasm
-              echo "Copied WASM: $WASM"
-            fi
-            if [ -f "$JS" ] && [ $(stat -c%s $JS) -gt 50000 ]; then
-              cp "$JS" htdocs/qemu-system-x86_64.js
-              echo "Copied JS: $JS"
-            else
-              echo "No full JS found; generating minimal loader"
-            fi
-            ls -lh htdocs/qemu-system-x86_64.*
-          '
+          # Step 2: Generate FULL JS loader (10–12 MB)
+          docker exec qb sh -c "
+            cd build || cd .
+            WASM_FILE=\$(find . -name 'qemu-system-x86_64.wasm' -type f | head -n1)
+            echo 'Generating full JS loader from \$WASM_FILE'
 
-          # Generate minimal JS glue if not produced (works with official build)
-          docker exec qb sh -c '
-            if [ ! -f htdocs/qemu-system-x86_64.js ] || [ $(stat -c%s htdocs/qemu-system-x86_64.js) -lt 50000 ]; then
-              cat > htdocs/qemu-system-x86_64.js << "EOF"
-            (function() {
-              var Module = {
-                canvas: document.getElementById("canvas"),
-                print: (text) => console.log(text),
-                printErr: (text) => console.error(text),
-                locateFile: (path) => "./" + path,
-                noInitialRun: true,
-                arguments: [],
-                preRun: [],
-                postRun: []
-              };
-              Module.instantiateWasm = function(imports, successCallback) {
-                WebAssembly.instantiateStreaming(fetch("qemu-system-x86_64.wasm"), imports)
-                  .then((obj) => { successCallback(obj.instance); return obj.instance; })
-                  .catch((err) => { console.error("WASM load failed:", err); });
-                return {};
-              };
-              window.Module = Module;
-            })();
-            EOF
-              echo "Generated working minimal JS glue"
-            fi
-          '
+            emcc \"\$WASM_FILE\" \
+              -O3 \
+              -sASYNCIFY=1 \
+              -sMODULARIZE=1 \
+              -sEXPORT_NAME=createQemuModule \
+              -sEXPORT_ES6=1 \
+              -sENVIRONMENT=web,worker \
+              -sFORCE_FILESYSTEM=1 \
+              -sALLOW_MEMORY_GROWTH=1 \
+              -sTOTAL_MEMORY=2GB \
+              -sMALLOC=mimalloc \
+              -sPROXY_TO_PTHREAD=1 \
+              -sEXIT_RUNTIME=1 \
+              -o /qemu/htdocs/qemu-system-x86_64.js
 
-          # Preload ISO
+            cp *.worker.js /qemu/htdocs/ 2>/dev/null || true
+            echo 'Generated files:' && ls -lh /qemu/htdocs/
+          "
+
+          # Step 3: Bundle ISO
           docker exec qb python3 /emsdk/upstream/emscripten/tools/file_packager.py \
-            htdocs/qemu.data \
-            --preload images/android-x86.iso@/android-x86.iso \
-            --js-output=htdocs/load.js
-
-          # Debug
-          docker exec qb sh -c 'echo "=== htdocs ==="; ls -lh htdocs/; echo "JS size: $(stat -c%s htdocs/qemu-system-x86_64.js 2>/dev/null || echo 0)"'
+            /qemu/htdocs/qemu.data \
+            --preload /qemu/htdocs/images/android-x86.iso@/android-x86.iso \
+            --js-output=/qemu/htdocs/load.js \
+            --use-preload-plugins --lz4
 
           docker stop qb
 
       - name: Optimize WASM
         run: |
-          if [ -f qemu-wasm/htdocs/qemu-system-x86_64.wasm ]; then
-            wasm-opt -O3 --asyncify qemu-wasm/htdocs/qemu-system-x86_64.wasm -o qemu-wasm/htdocs/qemu-system-x86_64.wasm.opt
-            mv qemu-wasm/htdocs/qemu-system-x86_64.wasm.opt qemu-wasm/htdocs/qemu-system-x86_64.wasm
-            echo "WASM optimized"
-          fi
+          wasm-opt -O3 --asyncify qemu-wasm/htdocs/qemu-system-x86_64.wasm -o qemu-wasm/htdocs/qemu-system-x86_64.wasm
 
-      - name: Assemble dist + create index.html
+      - name: Create index.html
         run: |
           mkdir -p dist
-          cp -r qemu-wasm/htdocs/* dist/ 2>/dev/null || true
+          cat > dist/index.html <<'EOF'
+<!DOCTYPE html><html><head><meta charset=utf-8><title>Android-x86 9.0-r2 × QEMU/WASM</title>
+<style>body{margin:0;background:#000;color:#0f0;font-family:system-ui;text-align:center;padding:20px}
+canvas{max-width:100%;image-rendering:pixelated;border:4px solid #0f0;border-radius:12px}
+button{font-size:20px;padding:15px 30px;margin:10px;background:#0f0;color:#000;border:none;border-radius:8px;cursor:pointer}</style>
+<script src="./qemu-system-x86_64.js"></script>
+<script src="./load.js"></script>
+</head><body>
+<h1>Android-x86 9.0-r2 in Browser</h1>
+<canvas id="canvas"></canvas><br>
+<button id="start">Start Android</button>
+<button id="stop" disabled>Stop</button>
+<p>First boot: 60–90 seconds</p>
+<script>
+let qemu=null;
+document.getElementById('start').onclick = async () => {
+  qemu = await createQemuModule({
+    canvas: document.getElementById('canvas'),
+    arguments: [
+      '-cpu', 'qemu64,+ssse3,+sse4.2,+popcnt',
+      '-m', '2048',
+      '-smp', '4',
+      '-device', 'virtio-gpu-pci',
+      '-device', 'virtio-keyboard-pci',
+      '-device', 'virtio-mouse-pci',
+      '-drive', 'if=none,id=cdrom,format=raw,readonly=on,file=/android-x86.iso',
+      '-device', 'ide-cd,drive=cdrom,bootindex=0',
+      '-boot', 'd'
+    ]
+  });
+  document.getElementById('start').disabled=true;
+  document.getElementById('stop').disabled=false;
+};
+document.getElementById('stop').onclick=()=>location.reload();
+</script>
+</body></html>
+EOF
 
-          cat > dist/index.html << 'EOF'
-          <!DOCTYPE html>
-          <html lang="en">
-          <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Android-x86 9.0-r2 • QEMU WebAssembly</title>
-            <style>
-              body { margin: 0; padding: 20px; background: #000; color: #0f0; font-family: system-ui, sans-serif; text-align: center; }
-              h1 { margin: 10px 0 20px; }
-              canvas { border: 4px solid #0f0; border-radius: 16px; max-width: 100%; height: auto; image-rendering: pixelated; }
-              button { font-size: 18px; padding: 14px 32px; margin: 20px; background: #000; color: #0f0; border: 2px solid #0f0; border-radius: 12px; cursor: pointer; }
-              button:hover { background: #003300; }
-              button:disabled { opacity: 0.6; cursor: not-allowed; }
-              .info { margin: 20px; font-size: 14px; opacity: 0.8; }
-            </style>
-            <script src="./qemu-system-x86_64.js"></script>
-            <script src="./load.js"></script>
-          </head>
-          <body>
-            <h1>Android-x86 9.0-r2 (Pie)</h1>
-            <p>Running natively in your browser via QEMU + WebAssembly</p>
-            <canvas id="canvas" width="1024" height="768"></canvas>
-            <br>
-            <button id="startBtn">Start Android</button>
-            <div class="info">First boot: 40–90 seconds • Works best in Chrome/Edge/Firefox • No installation required</div>
-
-            <script>
-              let Module;
-              const canvas = document.getElementById('canvas');
-              canvas.addEventListener('webglcontextlost', () => alert('WebGL context lost. Please reload the page.'));
-
-              const startBtn = document.getElementById('startBtn');
-              startBtn.onclick = async function() {
-                this.disabled = true;
-                this.textContent = 'Loading WASM... (10–30s)';
-                try {
-                  if (typeof createQemuModule === 'function') {
-                    Module = await createQemuModule({ 
-                      canvas, 
-                      print: console.log.bind(console), 
-                      printErr: console.error.bind(console) 
-                    });
-                  } else {
-                    // Fallback for minimal glue
-                    const response = await fetch('./qemu-system-x86_64.wasm');
-                    const buffer = await response.arrayBuffer();
-                    const imports = { env: {} }; // Basic imports
-                    const wasmModule = await WebAssembly.instantiate(buffer, imports);
-                    Module = { exports: wasmModule.instance.exports };
-                  }
-                  this.textContent = 'Starting Android... (40–90s)';
-                  const args = [
-                    '-cpu', 'qemu64,+ssse3,+sse4.2,+popcnt',
-                    '-m', '2048',
-                    '-smp', '4',
-                    '-drive', 'if=none,id=d0,file=/android-x86.iso,format=raw,readonly=on',
-                    '-device', 'virtio-scsi-pci',
-                    '-device', 'scsi-hd,drive=d0',
-                    '-boot', 'd',
-                    '-device', 'virtio-gpu-pci',
-                    '-device', 'virtio-keyboard-pci',
-                    '-device', 'virtio-mouse-pci',
-                    '-nic', 'user,model=virtio-net-pci',
-                    '-rtc', 'base=utc',
-                    '-no-reboot'
-                  ];
-                  if (Module.callMain) {
-                    Module.callMain(args);
-                  } else {
-                    Module.arguments = args;
-                    Module._main(); // Fallback call
-                  }
-                } catch (err) {
-                  console.error('VM start failed:', err);
-                  this.disabled = false;
-                  this.textContent = 'Start Android';
-                }
-              };
-            </script>
-          </body>
-          </html>
-          EOF
-
-      - name: Verify build
+      - name: Final package & verify
         run: |
-          set -e
-          du -sh dist/ || true
-          ls -lh dist/ || true
-          [ -f dist/qemu-system-x86_64.wasm ] && echo "✅ WASM built ($(du -h dist/qemu-system-x86_64.wasm | cut -f1))"
-          JS_SIZE=$(stat -c%s dist/qemu-system-x86_64.js 2>/dev/null || echo 0)
-          [ $JS_SIZE -gt 1000 ] && echo "✅ JS glue ($JS_SIZE bytes)"
-          DATA_SIZE=$(stat -c%s dist/qemu.data 2>/dev/null || echo 0)
-          [ $DATA_SIZE -gt 900000000 ] && echo "✅ Data with ISO ($(du -h dist/qemu.data | cut -f1))"
+          cp -r qemu-wasm/htdocs/* dist/
+          echo "FINAL FILES:"
+          ls -lh dist/
 
-      - name: Upload artifact
+          # Must be >7MB
+          [ $(stat -c%s dist/qemu-system-x86_64.js) -gt 7000000 ] || {
+            echo "JS file too small!"
+            exit 1
+          }
+
+          echo "SUCCESS! JS size: $(du -h dist/qemu-system-x86_64.js | cut -f1)"
+          du -sh dist/
+
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: android-x86-wasm-complete
+          name: android-x86-wasm-emulator
           path: dist/
-          retention-days: 30
