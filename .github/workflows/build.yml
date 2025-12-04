@@ -1,4 +1,4 @@
-name: QEMU Web Android Build
+name: QEMU-WASM Android Build
 
 on:
   push:
@@ -15,8 +15,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2. Install dependencies
-      - name: Install build tools
+      # 2. Install build tools
+      - name: Install dependencies
         run: |
           sudo apt update
           sudo apt install -y git cmake ninja-build python3 python3-pip nodejs npm build-essential pkg-config libglib2.0-dev zlib1g-dev
@@ -29,38 +29,36 @@ jobs:
           ./emsdk install latest
           ./emsdk activate latest
           source ./emsdk_env.sh
-          echo "Emscripten installed"
 
-      # 4. Clone QEMU
-      - name: Clone QEMU source
+      # 4. Clone QEMU-WASM fork
+      - name: Clone QEMU-WASM
         run: |
-          git clone https://github.com/qemu/qemu.git
-          cd qemu
-          git checkout v8.2.0
+          git clone --recursive https://github.com/marcinbojko/qemu-wasm.git
+          cd qemu-wasm
 
-      # 5. Build QEMU for WebAssembly
+      # 5. Build QEMU-WASM
       - name: Build QEMU-WASM
         shell: bash
         run: |
-          cd qemu
-          mkdir -p build-wasm
-          cd build-wasm
+          cd qemu-wasm
+          mkdir -p build
+          cd build
           source ../../emsdk/emsdk_env.sh
-          emcmake cmake ../
+          emcmake cmake ..
           emmake make -j$(nproc)
 
-      # 6. Copy BIOS / ISO / JS loader
+      # 6. Copy BIOS and Android ISO
       - name: Prepare web artifacts
         run: |
           mkdir -p dist
-          cp qemu/build-wasm/qemu-system-x86_64.wasm dist/
-          cp qemu/bios/* dist/ || echo "No BIOS folder found, please add BIOS files"
+          cp qemu-wasm/build/qemu-system-x86_64.wasm dist/
+          cp qemu-wasm/bios/* dist/ || echo "No BIOS folder found, please add BIOS files"
           cp isos/android-x86-9.0.iso dist/ || echo "ISO not found, add android-x86 ISO to /isos"
 
-      # 7. Upload artifacts
-      - name: Upload QEMU-Web
+      # 7. Upload final artifacts
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: QEMU-Web-Android
+          name: QEMU-WASM-Android
           path: dist/
           retention-days: 90
