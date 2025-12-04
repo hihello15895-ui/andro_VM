@@ -1,4 +1,4 @@
-name: Android-x86 Web Emulator (v86) – Raw Files Only
+name: Android-x86 Web Emulator (v86) – Raw Files Only (FIXED CDN)
 
 on:
   push:
@@ -13,12 +13,13 @@ jobs:
       - name: Create dist folder
         run: mkdir -p dist
 
-      - name: Download latest official prebuilt v86 (always works)
+      - name: Download latest official prebuilt v86 from jsDelivr CDN
         run: |
           cd dist
-          curl -L --fail https://libv86.dev/libv86.js  -o libv86.js
-          curl -L --fail https://libv86.dev/v86.wasm   -o v86.wasm
-          curl -L --fail https://libv86.dev/libv86.mjs -o libv86.mjs || true   # optional ESM version
+          # Official jsDelivr CDN for v86 (npm package) – always available & up-to-date
+          curl -L --fail https://cdn.jsdelivr.net/npm/v86@0.5.262/build/libv86.js  -o libv86.js
+          curl -L --fail https://cdn.jsdelivr.net/npm/v86@0.5.262/build/v86.wasm   -o v86.wasm
+          curl -L --fail https://cdn.jsdelivr.net/npm/v86@0.5.262/build/libv86.mjs -o libv86.mjs || true  # optional ESM version
 
       - name: Download Android-x86 9.0-r2 from your release
         run: |
@@ -26,16 +27,18 @@ jobs:
           curl -L --fail -# -o android-x86.iso \
             https://github.com/hihello15895-ui/andro_VM/releases/download/iso/android-x86_64-9.0-r2.iso
 
-      - name: Verify files exist
+      - name: Verify all files downloaded successfully
         run: |
           cd dist
-          echo "Files in dist:"
+          echo "=== Files in dist/ ==="
           ls -lh
-          [ -f libv86.js ]     && echo "libv86.js OK"
-          [ -f v86.wasm ]      && echo "v86.wasm OK"
-          [ -f android-x86.iso ] && echo "android-x86.iso OK ($(du -h android-x86.iso | cut -f1))"
+          echo ""
+          [ -f libv86.js ]     && echo "✓ libv86.js OK ($(du -h libv86.js | cut -f1))" || echo "✗ libv86.js MISSING"
+          [ -f v86.wasm ]      && echo "✓ v86.wasm OK ($(du -h v86.wasm | cut -f1))" || echo "✗ v86.wasm MISSING"
+          [ -f libv86.mjs ]    && echo "✓ libv86.mjs OK ($(du -h libv86.mjs | cut -f1))" || echo "✗ libv86.mjs MISSING"
+          [ -f android-x86.iso ] && echo "✓ android-x86.iso OK ($(du -h android-x86.iso | cut -f1))" || echo "✗ android-x86.iso MISSING"
 
-      - name: Upload raw emulator files (NO index.html)
+      - name: Upload raw emulator files (NO index.html – add your own later)
         uses: actions/upload-artifact@v4
         with:
           name: Android-9-Pie-v86-Raw-Files
