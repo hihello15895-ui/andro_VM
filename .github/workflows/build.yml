@@ -34,15 +34,12 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y \
-            git make binaryen wget curl ca-certificates \
-            clang build-essential python3
+          sudo apt-get install -y git make binaryen wget curl ca-certificates clang build-essential python3
 
       - name: Clone v86
         run: |
           git clone --depth 1 https://github.com/copy/v86.git
-          cd v86
-          git submodule update --init --recursive
+          cd v86 && git submodule update --init --recursive
 
       - name: Download Android-x86 ISO (robust)
         run: |
@@ -51,100 +48,74 @@ jobs:
           cd v86/images
 
           ISO_URL="https://osdn.net/dl/android-x86/android-x86_64-4.4-r5.iso"
-          USER_AGENT="Mozilla/5.0 (compatible; GitHub-Actions)"
+          UA="Mozilla/5.0 (compatible; GitHub-Actions)"
 
-          # Skip download if explicitly disabled and no ISO exists
           if [ "$DOWNLOAD_ISO" = "false" ]; then
             if ls ../../*android*.iso >/dev/null 2>&1 || [ -f android-x86.iso ]; then
-              echo "Using existing ISO from repository"
               cp ../../*android*.iso android-x86.iso 2>/dev/null || true
-              [ -f android-x86.iso ] && exit 0
+              exit 0
             else
-              echo "No ISO found and download disabled → skipping"
+              echo "No ISO and download disabled -> skipping"
               exit 0
             fi
           fi
 
           echo "Downloading Android-x86 ISO..."
-          if ! wget --user-agent="$USER_AGENT" -t 8 --timeout=30 -c -O android-x86.iso "$ISO_URL"; then
-            echo "wget failed, falling back to curl..."
-            curl -A "$USER_AGENT" -L --retry 8 --fail -o android-x86.iso "$ISO_URL"
-          fi
+          wget --user-agent="$UA" -t 8 --timeout=30 -c -O android-x86.iso "$ISO_URL" || \
+            curl -A "$UA" -L --retry 8 --fail -o android-x86.iso "$ISO_URL"
 
           if [ ! -f android-x86.iso ] || [ $(stat -c%s android-x86.iso) -lt 10000000 ]; then
             if [ "$USE_TEST_ISO" = "true" ]; then
-              echo "Creating tiny test ISO..."
               dd if=/dev/zero of=android-x86.iso bs=1M count=10
             else
               exit 1
             fi
           fi
 
-          echo "ISO ready: $(du -h android-x86.iso)"
-
-      - name: Build v86 (with multiple fallback strategies)
+      - name: Build v86
         run: |
           set -euo pipefail
           cd v86
 
-          TARGETS=(
-            "build/libv86.js"
-            "build/v86_all.js"
-            "build/v86.wasm"
-            "build/libv86.mjs"
-            "libv86.js"
-            "v86.js"
-            "all"
-          )
-
-          for target in "${TARGETS[@]}"; do
+          for target in build/libv86.js build/v86_all.js build/v86.wasm build/libv86.mjs libv86.js all; do
             echo "Trying make $target ..."
-            if emmake make -j$(nproc) "$target"; then
-              echo "Success with target: $target"
-              break
-            fi
+            emmake make -j$(nproc) "$target" && break
           done
 
-          # Final fallback
-          [ -f build/libv86.js ] || emmake make -j$(nproc) || true
-          [ -f build/libv86.js ] || (npm ci && npm run build) || true
+          emmake make -j$(nproc) || npm run build || true
 
           if ! ls {build/,}*.js {build/,}*.wasm 2>/dev/null | grep -q .; then
-            echo "No JS/WASM artifacts produced!"
+            echo "No artifacts produced"
             exit 1
           fi
 
-          echo "Build complete. Artifacts:"
-          ls -la {build/,}*.js {build/,}*.wasm 2>/dev/null || true
-
-      - name: Package artifacts
+      - name: Package & optimize
         run: |
           mkdir -p dist
           cp v86/{build/,}*.js v86/{build/,}*.mjs v86/{build/,}*.wasm dist/ 2>/dev/null || true
           cp v86/images/android-x86.iso dist/ 2>/dev/null || true
 
-      - name: Optimize WASM
-        run: |
           for f in dist/*.wasm; do
             [ -f "$f" ] && wasm-opt -O3 --strip-debug "$f" -o "$f.opt" && mv "$f.opt" "$f"
           done
 
-      - name: Create beautiful demo page
+      - name: Create demo page
         run: |
           cd dist
 
-          cat > index.html <<'EOF'
+          # Using printf + literal block to avoid YAML parsing issues with < and >
+          printf %s "$(cat <<'HTML'"
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
   <title>Android-x86 in Browser (v86)</title>
   <style>
-    body { margin:0; background:#111; color:#fff; font-family:sans-serif; text-align:center; padding:20px; }
-    #phone { width:400px; height:760px; margin:20px auto; border:20px solid #222; border-radius:45px; overflow:hidden; background:#000; box-shadow:0 20px 60px #0008; }
-    canvas { width:100%; height:100%; display:block; }
-    button { margin:10px; padding:15px 30px; font-size:18px; background:#0066ff; color:white; border:none; border-radius:12px; cursor:pointer; }
-    button:disabled { background:#444; cursor:not-allowed; }
+    body{margin:0;background:#111;color:#fff;font-family:sans-serif;text-align:center;padding:20px}
+    #phone{width:400px;height:760px;margin:20px auto;border:20px solid #222;border-radius:45px;overflow:hidden;background:#000;box-shadow:0 20px 60px #0008}
+    canvas{width:100%;height:100%;display:block}
+    button{margin:10px;padding:15px 30px;font-size:18px;background:#0066ff;color:white;border:none;border-radius:12px;cursor:pointer}
+    button:disabled{background:#444;cursor:not-allowed}
   </style>
 </head>
 <body>
@@ -164,7 +135,7 @@ jobs:
       memory_size: 512 * 1024 * 1024,
       vga_memory_size: 8 * 1024 * 1024,
       autostart: false,
-      bzimage: { url: "./android-x86.iso" } // v86 supports ISO as boot disk
+      cdrom: { url: "./android-x86.iso" }
     });
 
     await new Promise(r => emu.add_listener("emulator-ready", r));
@@ -174,7 +145,6 @@ jobs:
       document.getElementById("start").disabled = true;
       document.getElementById("stop").disabled = false;
     };
-
     document.getElementById("stop").onclick = () => {
       emu.stop();
       document.getElementById("start").disabled = false;
@@ -183,13 +153,59 @@ jobs:
   </script>
 </body>
 </html>
-EOF
+HTML
+          )" > index.html
 
-          # Fallback for non-module build
+          # Fallback for non-ESM builds
           if [ ! -f libv86.mjs ] && [ -f libv86.js ]; then
-            sed -i 's/type="module"//; s/import .* from .*;//' index.html
-            sed -i 's/const V86 =.*$/const V86 = window.V86;/' index.html
-            echo '<script src="libv86.js"></script>' >> index.html
+            cat > index.html <<'HTML'
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Android-x86 in Browser (v86)</title>
+  <style>
+    body{margin:0;background:#111;color:#fff;font-family:sans-serif;text-align:center;padding:20px}
+    #phone{width:400px;height:760px;margin:20px auto;border:20px solid #222;border-radius:45px;overflow:hidden;background:#000;box-shadow:0 20px 60px #0008}
+    canvas{width:100%;height:100%;display:block}
+    button{margin:10px;padding:15px 30px;font-size:18px;background:#0066ff;color:white;border:none;border-radius:12px;cursor:pointer}
+    button:disabled{background:#444;cursor:not-allowed}
+  </style>
+</head>
+<body>
+  <h1>Android-x86 WebAssembly Emulator</h1>
+  <div id="phone"><div id="screen"><canvas></canvas></div></div>
+  <button id="start">Start Android</button>
+  <button id="stop" disabled>Stop</button>
+  <p>Boot takes 1–2 minutes. Be patient!</p>
+
+  <script src="libv86.js"></script>
+  <script>
+    const emu = new V86({
+      screen_container: document.getElementById("screen"),
+      wasm_url: "v86.wasm",
+      memory_size: 512 * 1024 * 1024,
+      vga_memory_size: 8 * 1024 * 1024,
+      autostart: false,
+      cdrom: { url: "android-x86.iso" }
+    });
+
+    emu.add_listener("emulator-ready", () => {
+      document.getElementById("start").onclick = () => {
+        emu.run();
+        document.getElementById("start").disabled = true;
+        document.getElementById("stop").disabled = false;
+      };
+      document.getElementById("stop").onclick = () => {
+        emu.stop();
+        document.getElementById("start").disabled = false;
+        document.getElementById("stop").disabled = true;
+      };
+    });
+  </script>
+</body>
+</html>
+HTML
           fi
 
       - name: Upload artifact
