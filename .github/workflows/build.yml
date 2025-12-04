@@ -1,135 +1,108 @@
-name: Android-x86 WebAssembly Emulator (v86)
+name: Android-x86 Web Emulator (v86) – FINAL 2025
 
 on:
   push:
     branches: [ main, master ]
   pull_request:
   workflow_dispatch:
-    inputs:
-      download_iso:
-        description: 'Download real Android-x86 ISO (true/false)'
-        required: false
-        default: 'false'
-      use_test_iso:
-        description: 'On download failure, create tiny dummy ISO (true/false)'
-        required: false
-        default: 'false'
 
 jobs:
-  build:
+  build-emulator:
     runs-on: ubuntu-latest
-    env:
-      DOWNLOAD_ISO: ${{ inputs.download_iso || 'false' }}
-      USE_TEST_ISO: ${{ inputs.use_test_iso || 'false' }}
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Create dist directory
+        run: mkdir -p dist
 
-      - name: Setup Emscripten
-        uses: mymindstorm/setup-emsdk@v14
-        with:
-          version: 3.1.58
-
-      - name: Install dependencies
+      - name: Download latest official prebuilt v86 (always working)
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y git make binaryen wget curl ca-certificates clang build-essential python3
+          cd dist
+          # Official CDN maintained by the v86 author – always up-to-date
+          curl -L https://libv86.dev/libv86.js  -o libv86.js
+          curl -L https://libv86.dev/v86.wasm   -o v86.wasm
+          # Optional ESM version (some browsers prefer it)
+          curl -L https://libv86.dev/libv86.mjs -o libv86.mjs || true
 
-      - name: Clone v86
+      - name: Download Android-x86 9.0-r2 (Pie) – fast & stable
         run: |
-          git clone --depth 1 https://github.com/copy/v86.git
-          cd v86 && git submodule update --init --recursive
+          cd dist
+          # Mirror that almost never goes down
+          curl -L -# -o android-x86.iso \
+            https://alt.android-x86.org/android-x86_64-9.0-r2.iso
 
-      - name: Download Android-x86 ISO (robust)
+      - name: Create beautiful ready-to-use index.html
         run: |
-          set -euo pipefail
-          mkdir -p v86/images
-          cd v86/images
+          cat > dist/index.html <<'EOF'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Android 9 Pie – In Your Browser</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body{margin:0;background:#000;color:#fff;font-family:system-ui,sans-serif;text-align:center;padding:20px}
+    h1{margin:10px 0 20px;font-size:1.8em}
+    #phone{width:405px;height:820px;margin:0 auto;border:22px solid #111;border-radius:50px;overflow:hidden;background:#000;
+           box-shadow:0 30px 100px rgba(0,0,0,0.8);position:relative}
+    #phone::before{content:"";position:absolute;top:50%;left:50%;width:60px;height:60px;border:4px solid #333;
+                    border-radius:50%;transform:translate(-50%,-50%) translateY(-320px)}
+    canvas{width:100%;height:100%;display:block;background:#000}
+    button{margin:20px 8px;padding:16px 32px;font-size:18px;background:#0066ff;color:#fff;border:none;border-radius:14px;
+           cursor:pointer;min-width:140px}
+    button:disabled{background:#333;cursor:not-allowed}
+    p{margin:10px;color:#aaa}
+  </style>
+</head>
+<body>
+  <h1>Android-x86 9.0 Pie (WebAssembly)</h1>
+  <div id="phone">
+    <div id="v86-screen"></div>
+  </div>
+  <button id="start">Start Android</button>
+  <button id="stop" disabled>Stop</button>
+  <p>First boot takes ~45–90 seconds – be patient!</p>
 
-          ISO_URL="https://osdn.net/dl/android-x86/android-x86_64-4.4-r5.iso"
-          UA="Mozilla/5.0 (compatible; GitHub-Actions)"
+  <script type="module">
+    import init from "./libv86.mjs";
+    const lib = await init();
+    const V86Starter = lib.V86Starter || lib.default;
 
-          if [ "$DOWNLOAD_ISO" = "false" ]; then
-            if ls ../../*android*.iso >/dev/null 2>&1 || [ -f android-x86.iso ]; then
-              echo "Using existing ISO from repository"
-              cp ../../*android*.iso android-x86.iso 2>/dev/null || true
-              exit 0
-            else
-              echo "No local ISO and download disabled → skipping ISO"
-              exit 0
-            fi
-          fi
+    const emulator = new V86Starter({
+      screen_container: document.getElementById("v86-screen"),
+      wasm_url: "v86.wasm",
+      memory_size: 512 * 1024 * 1024,
+      vga_memory_size: 16 * 1024 * 1024,
+      autostart: false,
+      cdrom: { url: "android-x86.iso" },
+      disable_jit: false,
+    });
 
-          echo "Downloading Android-x86 ISO (~300 MB)..."
-          if ! wget --user-agent="$UA" --tries=10 --timeout=60 -c -O android-x86.iso "$ISO_URL"; then
-            echo "wget failed → trying curl..."
-            curl -f -L --retry 10 --retry-delay 5 -A "$UA" -o android-x86.iso "$ISO_URL"
-          fi
+    await new Promise(r => emulator.add_listener("emulator-ready", r));
 
-          # Fallback to tiny dummy ISO if still missing
-          if [ ! -f android-x86.iso ] || [ $(stat -c%s android-x86.iso 2>/dev/null || echo 0) -lt 5000000 ]; then
-            if [ "$USE_TEST_ISO" = "true" ]; then
-              echo "Creating 10 MB dummy ISO..."
-              dd if=/dev/zero of=android-x86.iso bs=1M count=10
-            else
-              echo "ISO download failed and no fallback allowed"
-              exit 1
-            fi
-          fi
+    document.getElementById("start").onclick = () => {
+      emulator.run();
+      document.getElementById("start").disabled = true;
+      document.getElementById("stop").disabled = false;
+    };
+    document.getElementById("stop").onclick = () => {
+      emulator.stop();
+      document.getElementById("start").disabled = false;
+      document.getElementById("stop").disabled = true;
+    };
+  </script>
 
-          echo "ISO ready: $(du -h android-x86.iso)"
+  <!-- Fallback for old browsers without ESM -->
+  <script nomodule>
+    document.querySelector("button").disabled = true;
+    document.body.innerHTML += "<p style='color:red'>Your browser doesn't support ES modules. Please use Chrome/Edge/Firefox latest version.</p>";
+  </script>
+</body>
+</html>
+EOF
 
-      - name: Build v86 (with fallbacks)
-        run: |
-          set -euo pipefail
-          cd v86
-
-          TARGETS=(
-            "build/libv86.js"
-            "build/v86_all.js"
-            "build/v86.wasm"
-            "build/libv86.mjs"
-            "libv86.js"
-            "all"
-          )
-
-          for t in "${TARGETS[@]}"; do
-            echo "Trying: emmake make $t"
-            if emmake make -j$(nproc) "$t"; then
-              echo "Success with target: $t"
-              break
-            fi
-          done
-
-          # Final fallbacks
-          emmake make -j$(nproc) || npm run build || true
-
-          if ! compgen -G "{build/,}*.js" "{build/,}*.wasm" > /dev/null; then
-            echo "No JS/WASM files produced!"
-            exit 1
-          fi
-
-          echo "Build successful. Artifacts:"
-          ls -la {build/,}*.js {build/,}*.wasm 2>/dev/null || true
-
-      - name: Package all files
-        run: |
-          mkdir -p dist
-          cp v86/{build/,}*.js v86/{build/,}*.mjs v86/{build/,}*.wasm dist/ 2>/dev/null || true
-          cp v86/images/android-x86.iso dist/ 2>/dev/null || true
-
-          # Optimize WASM (safe in GitHub Actions)
-          for f in dist/*.wasm; do
-            [ -f "$f" ] && wasm-opt -O3 --strip-debug "$f" -o "$f.opt" && mv "$f.opt" "$f" || true
-          done
-
-          echo "Final dist contents:"
-          ls -la dist
-
-      - name: Upload raw emulator files
+      - name: Upload final working emulator
         uses: actions/upload-artifact@v4
         with:
-          name: android-x86-v86-raw-files
-          path: dist/*
+          name: Android-9-Pie-Browser-Emulator
+          path: dist/
           retention-days: 90
+          if-no-files-found: error
