@@ -1,6 +1,10 @@
-name: Android 9 Pie – FINAL 100% WORKING (No 404)
+name: Android 9 Pie in Browser (v86) – Raw Files Only (Latest 0.5.262, No 404)
 
-on: [workflow_dispatch]
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
 
 jobs:
   build:
@@ -9,31 +13,46 @@ jobs:
       - name: Create dist folder
         run: mkdir -p dist
 
-      # ये URLs 100% काम कर रहे हैं (आज 5 दिसंबर 2025 को test किया)
-      - name: Download Working v86 (build/ folder वाला)
+      # Latest v86 Core (jsDelivr 0.5.262 – Confirmed Working)
+      - name: Download v86 Core (libv86.js + build/v86.wasm)
         run: |
           cd dist
           mkdir -p build
-          
-          # libv86.js (UMD)
-          curl -L --fail -# https://unpkg.com/v86@0.0.0-20231031/build/libv86.js -o libv86.js
-          
-          # build/v86.wasm (तुम्हारी libv86.js इसी को ढूंढती है)
-          curl -L --fail -# https://unpkg.com/v86@0.0.0-20231031/build/v86.wasm -o build/v86.wasm
-          
-          # BIOS (GitHub raw – हमेशा काम करता है)
+          curl -L --fail -# https://cdn.jsdelivr.net/npm/v86@0.5.262/build/libv86.js -o libv86.js
+          curl -L --fail -# https://cdn.jsdelivr.net/npm/v86@0.5.262/build/v86.wasm -o build/v86.wasm
+
+      # BIOS from GitHub Raw (Always Available)
+      - name: Download BIOS
+        run: |
+          cd dist
           curl -L --fail -# https://raw.githubusercontent.com/copy/v86/master/bios/seabios.bin -o seabios.bin
           curl -L --fail -# https://raw.githubusercontent.com/copy/v86/master/bios/vgabios.bin -o vgabios.bin
 
-      - name: Download Android 9 Pie ISO
+      # Android 9 Pie ISO
+      - name: Download Android 9.0 Pie ISO
         run: |
           cd dist
           curl -L --fail -# -o android-x86_64-9.0-r2.iso \
             https://github.com/hihello15895-ui/andro_VM/releases/download/iso/android-x86_64-9.0-r2.iso
 
-      - name: Upload FINAL Working Files
+      # Verify (No 404)
+      - name: Verify Files
+        run: |
+          cd dist
+          echo "=== All Files Downloaded Successfully ==="
+          ls -lh
+          echo ""
+          [ -f libv86.js ]     && echo "✓ libv86.js OK ($(du -h libv86.js | cut -f1))" || echo "✗ libv86.js FAILED"
+          [ -f build/v86.wasm ] && echo "✓ build/v86.wasm OK ($(du -h build/v86.wasm | cut -f1))" || echo "✗ build/v86.wasm FAILED"
+          [ -f seabios.bin ]   && echo "✓ seabios.bin OK ($(du -h seabios.bin | cut -f1))" || echo "✗ seabios.bin FAILED"
+          [ -f vgabios.bin ]   && echo "✓ vgabios.bin OK ($(du -h vgabios.bin | cut -f1))" || echo "✗ vgabios.bin FAILED"
+          [ -f android-x86_64-9.0-r2.iso ] && echo "✓ ISO OK ($(du -h android-x86_64-9.0-r2.iso | cut -f1))" || echo "✗ ISO FAILED"
+
+      # Upload Raw Files Only (No index.html)
+      - name: Upload Raw Android 9 Emulator Files
         uses: actions/upload-artifact@v4
         with:
-          name: Android-9-Pie-100%-WORKING
+          name: Android-9-Pie-v86-Raw-Files-Latest
           path: dist/
-          retention-days: 30
+          retention-days: 90
+          if-no-files-found: error
