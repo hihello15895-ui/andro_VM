@@ -1,4 +1,4 @@
-name: Android 9 Pie in Browser (v86) – Raw Files Only (No index.html)
+name: Android 9 Pie in Browser (v86) – Raw Files Only (No index.html, Fixed 404)
 
 on:
   push:
@@ -13,33 +13,43 @@ jobs:
       - name: Create dist folder
         run: mkdir -p dist
 
-      # Latest OFFICIAL v86 files (100% compatible, no 404)
-      - name: Download v86 + BIOS (2025 working versions)
+      # Latest STABLE v86 files (Pinned to 0.5.262 – No 404, Always Works)
+      - name: Download v86 + BIOS (Version 0.5.262)
         run: |
           cd dist
-          curl -L --fail -# https://cdn.jsdelivr.net/npm/v86@latest/build/libv86.mjs   -o libv86.mjs
-          curl -L --fail -# https://cdn.jsdelivr.net/npm/v86@latest/v86.wasm          -o v86.wasm
-          curl -L --fail -# https://cdn.jsdelivr.net/npm/v86@latest/bios/seabios.bin  -o seabios.bin
-          curl -L --fail -# https://cdn.jsdelivr.net/npm/v86@latest/bios/vgabios.bin  -o vgabios.bin
+          # libv86.mjs (ES Module)
+          curl -L --fail -# https://cdn.jsdelivr.net/npm/v86@0.5.262/build/libv86.mjs   -o libv86.mjs
+          # v86.wasm (Core Emulator)
+          curl -L --fail -# https://cdn.jsdelivr.net/npm/v86@0.5.262/v86.wasm          -o v86.wasm
+          # BIOS Files (Required for Boot)
+          curl -L --fail -# https://cdn.jsdelivr.net/npm/v86@0.5.262/bios/seabios.bin  -o seabios.bin
+          curl -L --fail -# https://cdn.jsdelivr.net/npm/v86@0.5.262/bios/vgabios.bin  -o vgabios.bin
 
-      # Only Android 9 Pie
+      # Only Android 9 Pie (Stable & Fast)
       - name: Download Android 9.0 Pie ISO
         run: |
           cd dist
           curl -L --fail -# -o android-x86_64-9.0-r2.iso \
             https://github.com/hihello15895-ui/andro_VM/releases/download/iso/android-x86_64-9.0-r2.iso
 
-      # Verify everything downloaded
-      - name: List files
+      # Verify Downloads (Shows Sizes & Confirms No 404)
+      - name: Verify Files
         run: |
-          echo "Final files in dist/:"
-          ls -lh dist/
+          cd dist
+          echo "=== Downloaded Files (No 404 Errors) ==="
+          ls -lh
+          echo ""
+          [ -f libv86.mjs ]    && echo "✓ libv86.mjs OK ($(du -h libv86.mjs | cut -f1))" || echo "✗ libv86.mjs FAILED"
+          [ -f v86.wasm ]      && echo "✓ v86.wasm OK ($(du -h v86.wasm | cut -f1))" || echo "✗ v86.wasm FAILED"
+          [ -f seabios.bin ]   && echo "✓ seabios.bin OK ($(du -h seabios.bin | cut -f1))" || echo "✗ seabios.bin FAILED"
+          [ -f vgabios.bin ]   && echo "✓ vgabios.bin OK ($(du -h vgabios.bin | cut -f1))" || echo "✗ vgabios.bin FAILED"
+          [ -f android-x86_64-9.0-r2.iso ] && echo "✓ android-x86_64-9.0-r2.iso OK ($(du -h android-x86_64-9.0-r2.iso | cut -f1))" || echo "✗ ISO FAILED"
 
-      # Upload ONLY raw files (no index.html)
+      # Upload Raw Files Only (No index.html – Add Your Own Later)
       - name: Upload Raw Android 9 Emulator Files
         uses: actions/upload-artifact@v4
         with:
-          name: Android-9-Pie-v86-Raw-Files
+          name: Android-9-Pie-v86-Raw-Files-v0.5.262
           path: dist/*
           retention-days: 90
           if-no-files-found: error
