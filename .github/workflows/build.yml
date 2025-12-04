@@ -1,4 +1,4 @@
-name: Android 9 Pie in Browser (v86) – Raw Files Only (BIOS Fixed)
+name: Android 9 Pie in Browser (v86) – Raw Files Only (npm Paths Fixed)
 
 on:
   push:
@@ -13,14 +13,14 @@ jobs:
       - name: Create dist folder
         run: mkdir -p dist
 
-      # NPM v86 Core (JS/WASM – Confirmed Working)
-      - name: Download v86 Core (npm 0.5.262)
+      # NPM v86 Core (Correct Paths – libv86.js UMD + build/v86.wasm)
+      - name: Download v86 Core (npm 0.5.262 – Fixed Paths)
         run: |
           cd dist
-          curl -L --fail -# https://cdn.jsdelivr.net/npm/v86@0.5.262/build/libv86.mjs -o libv86.mjs
-          curl -L --fail -# https://cdn.jsdelivr.net/npm/v86@0.5.262/v86.wasm          -o v86.wasm
+          curl -L --fail -# https://cdn.jsdelivr.net/npm/v86@0.5.262/build/libv86.js  -o libv86.js
+          curl -L --fail -# https://cdn.jsdelivr.net/npm/v86@0.5.262/build/v86.wasm    -o v86.wasm
 
-      # BIOS from v86 GitHub Repo Raw (Always Works – No npm)
+      # BIOS from v86 GitHub Raw (Always Works)
       - name: Download BIOS (Raw GitHub)
         run: |
           cd dist
@@ -38,20 +38,20 @@ jobs:
       - name: Verify Files
         run: |
           cd dist
-          echo "=== Files OK ==="
+          echo "=== All Files Downloaded (Fixed Paths) ==="
           ls -lh
           echo ""
-          [ -f libv86.mjs ]    && echo "✓ libv86.mjs ($(du -h libv86.mjs | cut -f1))" || echo "✗ libv86.mjs"
-          [ -f v86.wasm ]      && echo "✓ v86.wasm ($(du -h v86.wasm | cut -f1))" || echo "✗ v86.wasm"
-          [ -f seabios.bin ]   && echo "✓ seabios.bin ($(du -h seabios.bin | cut -f1))" || echo "✗ seabios.bin"
-          [ -f vgabios.bin ]   && echo "✓ vgabios.bin ($(du -h vgabios.bin | cut -f1))" || echo "✗ vgabios.bin"
-          [ -f android-x86_64-9.0-r2.iso ] && echo "✓ ISO ($(du -h android-x86_64-9.0-r2.iso | cut -f1))" || echo "✗ ISO"
+          [ -f libv86.js ]     && echo "✓ libv86.js OK ($(du -h libv86.js | cut -f1))" || echo "✗ libv86.js FAILED"
+          [ -f v86.wasm ]      && echo "✓ v86.wasm OK ($(du -h v86.wasm | cut -f1))" || echo "✗ v86.wasm FAILED"
+          [ -f seabios.bin ]   && echo "✓ seabios.bin OK ($(du -h seabios.bin | cut -f1))" || echo "✗ seabios.bin FAILED"
+          [ -f vgabios.bin ]   && echo "✓ vgabios.bin OK ($(du -h vgabios.bin | cut -f1))" || echo "✗ vgabios.bin FAILED"
+          [ -f android-x86_64-9.0-r2.iso ] && echo "✓ ISO OK ($(du -h android-x86_64-9.0-r2.iso | cut -f1))" || echo "✗ ISO FAILED"
 
-      # Upload Raw Files
-      - name: Upload Raw Files
+      # Upload Raw Files Only (No index.html)
+      - name: Upload Raw Android 9 Emulator Files
         uses: actions/upload-artifact@v4
         with:
-          name: Android-9-Pie-v86-Raw-Fixed
+          name: Android-9-Pie-v86-Raw-Files-FINAL-FIXED
           path: dist/*
           retention-days: 90
           if-no-files-found: error
