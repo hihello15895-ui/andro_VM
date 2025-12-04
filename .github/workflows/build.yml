@@ -1,43 +1,66 @@
-name: QEMU Web Build
+name: QEMU Web Android Build
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 180
+
     steps:
-      - uses: actions/checkout@v4
+      # 1. Checkout repository
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      # Install dependencies
-      - run: sudo apt update && sudo apt install -y cmake ninja-build python3 python3-pip
+      # 2. Install dependencies
+      - name: Install build tools
+        run: |
+          sudo apt update
+          sudo apt install -y git cmake ninja-build python3 python3-pip nodejs npm build-essential pkg-config libglib2.0-dev zlib1g-dev
 
-      # Download QEMU source
-      - run: |
+      # 3. Install Emscripten SDK
+      - name: Install Emscripten
+        run: |
+          git clone https://github.com/emscripten-core/emsdk.git
+          cd emsdk
+          ./emsdk install latest
+          ./emsdk activate latest
+          source ./emsdk_env.sh
+          echo "Emscripten installed"
+
+      # 4. Clone QEMU
+      - name: Clone QEMU source
+        run: |
           git clone https://github.com/qemu/qemu.git
           cd qemu
           git checkout v8.2.0
 
-      # Build QEMU for WASM
-      - run: |
+      # 5. Build QEMU for WebAssembly
+      - name: Build QEMU-WASM
+        shell: bash
+        run: |
           cd qemu
           mkdir -p build-wasm
           cd build-wasm
+          source ../../emsdk/emsdk_env.sh
           emcmake cmake ../
           emmake make -j$(nproc)
 
-      # Copy BIOS / ISO / JS loader
-      - run: |
+      # 6. Copy BIOS / ISO / JS loader
+      - name: Prepare web artifacts
+        run: |
           mkdir -p dist
-          cp build-wasm/qemu-system-x86_64.wasm dist/
-          cp ../bios/* dist/
-          cp ../isos/android-x86-9.0.iso dist/
+          cp qemu/build-wasm/qemu-system-x86_64.wasm dist/
+          cp qemu/bios/* dist/ || echo "No BIOS folder found, please add BIOS files"
+          cp isos/android-x86-9.0.iso dist/ || echo "ISO not found, add android-x86 ISO to /isos"
 
-      # Upload artifacts
-      - uses: actions/upload-artifact@v4
+      # 7. Upload artifacts
+      - name: Upload QEMU-Web
+        uses: actions/upload-artifact@v4
         with:
-          name: QEMU-Web
+          name: QEMU-Web-Android
           path: dist/
           retention-days: 90
