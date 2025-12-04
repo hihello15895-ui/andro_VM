@@ -1,4 +1,4 @@
-name: Android-x86 Web Emulator (v86) – FINAL 2025
+name: Android-x86 Web Emulator (v86) – Raw Files Only
 
 on:
   push:
@@ -7,102 +7,38 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-emulator:
+  build:
     runs-on: ubuntu-latest
     steps:
-      - name: Create dist directory
+      - name: Create dist folder
         run: mkdir -p dist
 
-      - name: Download latest official prebuilt v86 (always working)
+      - name: Download latest official prebuilt v86 (always works)
         run: |
           cd dist
-          # Official CDN maintained by the v86 author – always up-to-date
-          curl -L https://libv86.dev/libv86.js  -o libv86.js
-          curl -L https://libv86.dev/v86.wasm   -o v86.wasm
-          # Optional ESM version (some browsers prefer it)
-          curl -L https://libv86.dev/libv86.mjs -o libv86.mjs || true
+          curl -L --fail https://libv86.dev/libv86.js  -o libv86.js
+          curl -L --fail https://libv86.dev/v86.wasm   -o v86.wasm
+          curl -L --fail https://libv86.dev/libv86.mjs -o libv86.mjs || true   # optional ESM version
 
-      - name: Download Android-x86 9.0-r2 (Pie) – fast & stable
+      - name: Download Android-x86 9.0-r2 from your release
         run: |
           cd dist
-          # Mirror that almost never goes down
-          curl -L -# -o android-x86.iso \
-            https://alt.android-x86.org/android-x86_64-9.0-r2.iso
+          curl -L --fail -# -o android-x86.iso \
+            https://github.com/hihello15895-ui/andro_VM/releases/download/iso/android-x86_64-9.0-r2.iso
 
-      - name: Create beautiful ready-to-use index.html
+      - name: Verify files exist
         run: |
-          cat > dist/index.html <<'EOF'
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>Android 9 Pie – In Your Browser</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    body{margin:0;background:#000;color:#fff;font-family:system-ui,sans-serif;text-align:center;padding:20px}
-    h1{margin:10px 0 20px;font-size:1.8em}
-    #phone{width:405px;height:820px;margin:0 auto;border:22px solid #111;border-radius:50px;overflow:hidden;background:#000;
-           box-shadow:0 30px 100px rgba(0,0,0,0.8);position:relative}
-    #phone::before{content:"";position:absolute;top:50%;left:50%;width:60px;height:60px;border:4px solid #333;
-                    border-radius:50%;transform:translate(-50%,-50%) translateY(-320px)}
-    canvas{width:100%;height:100%;display:block;background:#000}
-    button{margin:20px 8px;padding:16px 32px;font-size:18px;background:#0066ff;color:#fff;border:none;border-radius:14px;
-           cursor:pointer;min-width:140px}
-    button:disabled{background:#333;cursor:not-allowed}
-    p{margin:10px;color:#aaa}
-  </style>
-</head>
-<body>
-  <h1>Android-x86 9.0 Pie (WebAssembly)</h1>
-  <div id="phone">
-    <div id="v86-screen"></div>
-  </div>
-  <button id="start">Start Android</button>
-  <button id="stop" disabled>Stop</button>
-  <p>First boot takes ~45–90 seconds – be patient!</p>
+          cd dist
+          echo "Files in dist:"
+          ls -lh
+          [ -f libv86.js ]     && echo "libv86.js OK"
+          [ -f v86.wasm ]      && echo "v86.wasm OK"
+          [ -f android-x86.iso ] && echo "android-x86.iso OK ($(du -h android-x86.iso | cut -f1))"
 
-  <script type="module">
-    import init from "./libv86.mjs";
-    const lib = await init();
-    const V86Starter = lib.V86Starter || lib.default;
-
-    const emulator = new V86Starter({
-      screen_container: document.getElementById("v86-screen"),
-      wasm_url: "v86.wasm",
-      memory_size: 512 * 1024 * 1024,
-      vga_memory_size: 16 * 1024 * 1024,
-      autostart: false,
-      cdrom: { url: "android-x86.iso" },
-      disable_jit: false,
-    });
-
-    await new Promise(r => emulator.add_listener("emulator-ready", r));
-
-    document.getElementById("start").onclick = () => {
-      emulator.run();
-      document.getElementById("start").disabled = true;
-      document.getElementById("stop").disabled = false;
-    };
-    document.getElementById("stop").onclick = () => {
-      emulator.stop();
-      document.getElementById("start").disabled = false;
-      document.getElementById("stop").disabled = true;
-    };
-  </script>
-
-  <!-- Fallback for old browsers without ESM -->
-  <script nomodule>
-    document.querySelector("button").disabled = true;
-    document.body.innerHTML += "<p style='color:red'>Your browser doesn't support ES modules. Please use Chrome/Edge/Firefox latest version.</p>";
-  </script>
-</body>
-</html>
-EOF
-
-      - name: Upload final working emulator
+      - name: Upload raw emulator files (NO index.html)
         uses: actions/upload-artifact@v4
         with:
-          name: Android-9-Pie-Browser-Emulator
-          path: dist/
+          name: Android-9-Pie-v86-Raw-Files
+          path: dist/*
           retention-days: 90
           if-no-files-found: error
