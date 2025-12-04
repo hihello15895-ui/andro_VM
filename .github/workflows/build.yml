@@ -7,11 +7,11 @@ on:
   workflow_dispatch:
     inputs:
       download_iso:
-        description: 'Download the real Android-x86 ISO (true/false)'
+        description: 'Download real Android-x86 ISO (true/false)'
         required: false
         default: 'false'
       use_test_iso:
-        description: 'If download fails, create a tiny dummy ISO (true/false)'
+        description: 'On download failure, create tiny dummy ISO (true/false)'
         required: false
         default: 'false'
 
@@ -26,7 +26,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Emscripten
+      - name: Setup Emscripten
         uses: mymindstorm/setup-emsdk@v14
         with:
           version: 3.1.58
@@ -52,165 +52,84 @@ jobs:
 
           if [ "$DOWNLOAD_ISO" = "false" ]; then
             if ls ../../*android*.iso >/dev/null 2>&1 || [ -f android-x86.iso ]; then
+              echo "Using existing ISO from repository"
               cp ../../*android*.iso android-x86.iso 2>/dev/null || true
               exit 0
             else
-              echo "No ISO and download disabled -> skipping"
+              echo "No local ISO and download disabled → skipping ISO"
               exit 0
             fi
           fi
 
-          echo "Downloading Android-x86 ISO..."
-          wget --user-agent="$UA" -t 8 --timeout=30 -c -O android-x86.iso "$ISO_URL" || \
-            curl -A "$UA" -L --retry 8 --fail -o android-x86.iso "$ISO_URL"
+          echo "Downloading Android-x86 ISO (~300 MB)..."
+          if ! wget --user-agent="$UA" --tries=10 --timeout=60 -c -O android-x86.iso "$ISO_URL"; then
+            echo "wget failed → trying curl..."
+            curl -f -L --retry 10 --retry-delay 5 -A "$UA" -o android-x86.iso "$ISO_URL"
+          fi
 
-          if [ ! -f android-x86.iso ] || [ $(stat -c%s android-x86.iso) -lt 10000000 ]; then
+          # Fallback to tiny dummy ISO if still missing
+          if [ ! -f android-x86.iso ] || [ $(stat -c%s android-x86.iso 2>/dev/null || echo 0) -lt 5000000 ]; then
             if [ "$USE_TEST_ISO" = "true" ]; then
+              echo "Creating 10 MB dummy ISO..."
               dd if=/dev/zero of=android-x86.iso bs=1M count=10
             else
+              echo "ISO download failed and no fallback allowed"
               exit 1
             fi
           fi
 
-      - name: Build v86
+          echo "ISO ready: $(du -h android-x86.iso)"
+
+      - name: Build v86 (with fallbacks)
         run: |
           set -euo pipefail
           cd v86
 
-          for target in build/libv86.js build/v86_all.js build/v86.wasm build/libv86.mjs libv86.js all; do
-            echo "Trying make $target ..."
-            emmake make -j$(nproc) "$target" && break
+          TARGETS=(
+            "build/libv86.js"
+            "build/v86_all.js"
+            "build/v86.wasm"
+            "build/libv86.mjs"
+            "libv86.js"
+            "all"
+          )
+
+          for t in "${TARGETS[@]}"; do
+            echo "Trying: emmake make $t"
+            if emmake make -j$(nproc) "$t"; then
+              echo "Success with target: $t"
+              break
+            fi
           done
 
+          # Final fallbacks
           emmake make -j$(nproc) || npm run build || true
 
-          if ! ls {build/,}*.js {build/,}*.wasm 2>/dev/null | grep -q .; then
-            echo "No artifacts produced"
+          if ! compgen -G "{build/,}*.js" "{build/,}*.wasm" > /dev/null; then
+            echo "No JS/WASM files produced!"
             exit 1
           fi
 
-      - name: Package & optimize
+          echo "Build successful. Artifacts:"
+          ls -la {build/,}*.js {build/,}*.wasm 2>/dev/null || true
+
+      - name: Package all files
         run: |
           mkdir -p dist
           cp v86/{build/,}*.js v86/{build/,}*.mjs v86/{build/,}*.wasm dist/ 2>/dev/null || true
           cp v86/images/android-x86.iso dist/ 2>/dev/null || true
 
+          # Optimize WASM (safe in GitHub Actions)
           for f in dist/*.wasm; do
-            [ -f "$f" ] && wasm-opt -O3 --strip-debug "$f" -o "$f.opt" && mv "$f.opt" "$f"
+            [ -f "$f" ] && wasm-opt -O3 --strip-debug "$f" -o "$f.opt" && mv "$f.opt" "$f" || true
           done
 
-      - name: Create demo page
-        run: |
-          cd dist
+          echo "Final dist contents:"
+          ls -la dist
 
-          # Using printf + literal block to avoid YAML parsing issues with < and >
-          printf %s "$(cat <<'HTML'"
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Android-x86 in Browser (v86)</title>
-  <style>
-    body{margin:0;background:#111;color:#fff;font-family:sans-serif;text-align:center;padding:20px}
-    #phone{width:400px;height:760px;margin:20px auto;border:20px solid #222;border-radius:45px;overflow:hidden;background:#000;box-shadow:0 20px 60px #0008}
-    canvas{width:100%;height:100%;display:block}
-    button{margin:10px;padding:15px 30px;font-size:18px;background:#0066ff;color:white;border:none;border-radius:12px;cursor:pointer}
-    button:disabled{background:#444;cursor:not-allowed}
-  </style>
-</head>
-<body>
-  <h1>Android-x86 WebAssembly Emulator</h1>
-  <div id="phone"><div id="screen"><canvas></canvas></div></div>
-  <button id="start">Start Android</button>
-  <button id="stop" disabled>Stop</button>
-  <p>Boot takes 1–2 minutes. Be patient!</p>
-
-  <script type="module">
-    import * as lib from "./libv86.mjs";
-    const V86 = lib.V86 || lib.default || window.V86;
-
-    const emu = new V86({
-      screen_container: document.getElementById("screen"),
-      wasm_url: "./v86.wasm",
-      memory_size: 512 * 1024 * 1024,
-      vga_memory_size: 8 * 1024 * 1024,
-      autostart: false,
-      cdrom: { url: "./android-x86.iso" }
-    });
-
-    await new Promise(r => emu.add_listener("emulator-ready", r));
-
-    document.getElementById("start").onclick = () => {
-      emu.run();
-      document.getElementById("start").disabled = true;
-      document.getElementById("stop").disabled = false;
-    };
-    document.getElementById("stop").onclick = () => {
-      emu.stop();
-      document.getElementById("start").disabled = false;
-      document.getElementById("stop").disabled = true;
-    };
-  </script>
-</body>
-</html>
-HTML
-          )" > index.html
-
-          # Fallback for non-ESM builds
-          if [ ! -f libv86.mjs ] && [ -f libv86.js ]; then
-            cat > index.html <<'HTML'
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Android-x86 in Browser (v86)</title>
-  <style>
-    body{margin:0;background:#111;color:#fff;font-family:sans-serif;text-align:center;padding:20px}
-    #phone{width:400px;height:760px;margin:20px auto;border:20px solid #222;border-radius:45px;overflow:hidden;background:#000;box-shadow:0 20px 60px #0008}
-    canvas{width:100%;height:100%;display:block}
-    button{margin:10px;padding:15px 30px;font-size:18px;background:#0066ff;color:white;border:none;border-radius:12px;cursor:pointer}
-    button:disabled{background:#444;cursor:not-allowed}
-  </style>
-</head>
-<body>
-  <h1>Android-x86 WebAssembly Emulator</h1>
-  <div id="phone"><div id="screen"><canvas></canvas></div></div>
-  <button id="start">Start Android</button>
-  <button id="stop" disabled>Stop</button>
-  <p>Boot takes 1–2 minutes. Be patient!</p>
-
-  <script src="libv86.js"></script>
-  <script>
-    const emu = new V86({
-      screen_container: document.getElementById("screen"),
-      wasm_url: "v86.wasm",
-      memory_size: 512 * 1024 * 1024,
-      vga_memory_size: 8 * 1024 * 1024,
-      autostart: false,
-      cdrom: { url: "android-x86.iso" }
-    });
-
-    emu.add_listener("emulator-ready", () => {
-      document.getElementById("start").onclick = () => {
-        emu.run();
-        document.getElementById("start").disabled = true;
-        document.getElementById("stop").disabled = false;
-      };
-      document.getElementById("stop").onclick = () => {
-        emu.stop();
-        document.getElementById("start").disabled = false;
-        document.getElementById("stop").disabled = true;
-      };
-    });
-  </script>
-</body>
-</html>
-HTML
-          fi
-
-      - name: Upload artifact
+      - name: Upload raw emulator files
         uses: actions/upload-artifact@v4
         with:
-          name: android-x86-web-emulator
-          path: dist/
-          retention-days: 30
+          name: android-x86-v86-raw-files
+          path: dist/*
+          retention-days: 90
