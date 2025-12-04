@@ -15,8 +15,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2. Install build tools
-      - name: Install dependencies
+      # 2. Install dependencies
+      - name: Install build tools
         run: |
           sudo apt update
           sudo apt install -y git cmake ninja-build python3 python3-pip nodejs npm build-essential pkg-config libglib2.0-dev zlib1g-dev
@@ -30,10 +30,10 @@ jobs:
           ./emsdk activate latest
           source ./emsdk_env.sh
 
-      # 4. Clone QEMU-WASM fork
-      - name: Clone QEMU-WASM
+      # 4. Clone public QEMU-WASM fork
+      - name: Clone QEMU-WASM fork
         run: |
-          git clone --recursive https://github.com/marcinbojko/qemu-wasm.git
+          git clone --recursive https://github.com/ahmedelgabri/qemu-wasm.git
           cd qemu-wasm
 
       # 5. Build QEMU-WASM
