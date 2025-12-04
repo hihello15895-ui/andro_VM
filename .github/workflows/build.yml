@@ -1,58 +1,43 @@
-name: Android 9 Pie in Browser (v86) – Raw Files Only (Latest 0.5.262, No 404)
+name: QEMU Web Build
 
 on:
   push:
-    branches: [ main, master ]
-  pull_request:
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Create dist folder
-        run: mkdir -p dist
+      - uses: actions/checkout@v4
 
-      # Latest v86 Core (jsDelivr 0.5.262 – Confirmed Working)
-      - name: Download v86 Core (libv86.js + build/v86.wasm)
-        run: |
-          cd dist
-          mkdir -p build
-          curl -L --fail -# https://cdn.jsdelivr.net/npm/v86@0.5.262/build/libv86.js -o libv86.js
-          curl -L --fail -# https://cdn.jsdelivr.net/npm/v86@0.5.262/build/v86.wasm -o build/v86.wasm
+      # Install dependencies
+      - run: sudo apt update && sudo apt install -y cmake ninja-build python3 python3-pip
 
-      # BIOS from GitHub Raw (Always Available)
-      - name: Download BIOS
-        run: |
-          cd dist
-          curl -L --fail -# https://raw.githubusercontent.com/copy/v86/master/bios/seabios.bin -o seabios.bin
-          curl -L --fail -# https://raw.githubusercontent.com/copy/v86/master/bios/vgabios.bin -o vgabios.bin
+      # Download QEMU source
+      - run: |
+          git clone https://github.com/qemu/qemu.git
+          cd qemu
+          git checkout v8.2.0
 
-      # Android 9 Pie ISO
-      - name: Download Android 9.0 Pie ISO
-        run: |
-          cd dist
-          curl -L --fail -# -o android-x86_64-9.0-r2.iso \
-            https://github.com/hihello15895-ui/andro_VM/releases/download/iso/android-x86_64-9.0-r2.iso
+      # Build QEMU for WASM
+      - run: |
+          cd qemu
+          mkdir -p build-wasm
+          cd build-wasm
+          emcmake cmake ../
+          emmake make -j$(nproc)
 
-      # Verify (No 404)
-      - name: Verify Files
-        run: |
-          cd dist
-          echo "=== All Files Downloaded Successfully ==="
-          ls -lh
-          echo ""
-          [ -f libv86.js ]     && echo "✓ libv86.js OK ($(du -h libv86.js | cut -f1))" || echo "✗ libv86.js FAILED"
-          [ -f build/v86.wasm ] && echo "✓ build/v86.wasm OK ($(du -h build/v86.wasm | cut -f1))" || echo "✗ build/v86.wasm FAILED"
-          [ -f seabios.bin ]   && echo "✓ seabios.bin OK ($(du -h seabios.bin | cut -f1))" || echo "✗ seabios.bin FAILED"
-          [ -f vgabios.bin ]   && echo "✓ vgabios.bin OK ($(du -h vgabios.bin | cut -f1))" || echo "✗ vgabios.bin FAILED"
-          [ -f android-x86_64-9.0-r2.iso ] && echo "✓ ISO OK ($(du -h android-x86_64-9.0-r2.iso | cut -f1))" || echo "✗ ISO FAILED"
+      # Copy BIOS / ISO / JS loader
+      - run: |
+          mkdir -p dist
+          cp build-wasm/qemu-system-x86_64.wasm dist/
+          cp ../bios/* dist/
+          cp ../isos/android-x86-9.0.iso dist/
 
-      # Upload Raw Files Only (No index.html)
-      - name: Upload Raw Android 9 Emulator Files
-        uses: actions/upload-artifact@v4
+      # Upload artifacts
+      - uses: actions/upload-artifact@v4
         with:
-          name: Android-9-Pie-v86-Raw-Files-Latest
+          name: QEMU-Web
           path: dist/
           retention-days: 90
-          if-no-files-found: error
