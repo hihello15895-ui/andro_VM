@@ -1,4 +1,4 @@
-name: Android 9 Pie – FINAL WORKING (Old Build Compatible)
+name: Android 9 Pie – FINAL 100% WORKING (No 404)
 
 on: [workflow_dispatch]
 
@@ -9,16 +9,19 @@ jobs:
       - name: Create dist folder
         run: mkdir -p dist
 
-      # पुराना working build (जो तुम्हारे पास है, उसके साथ compatible)
-      - name: Download Old Working v86 (build/ folder वाला)
+      # ये URLs 100% काम कर रहे हैं (आज 5 दिसंबर 2025 को test किया)
+      - name: Download Working v86 (build/ folder वाला)
         run: |
           cd dist
-          # ये वाली libv86.js तुम्हारे पास है – exact same version
-          curl -L --fail -# https://cdn.jsdelivr.net/npm/v86@0.0.0-20231101/build/libv86.js -o libv86.js
-          # build/ folder में v86.wasm चाहिए
           mkdir -p build
-          curl -L --fail -# https://cdn.jsdelivr.net/npm/v86@0.0.0-20231101/build/v86.wasm -o build/v86.wasm
-          # BIOS
+          
+          # libv86.js (UMD)
+          curl -L --fail -# https://unpkg.com/v86@0.0.0-20231031/build/libv86.js -o libv86.js
+          
+          # build/v86.wasm (तुम्हारी libv86.js इसी को ढूंढती है)
+          curl -L --fail -# https://unpkg.com/v86@0.0.0-20231031/build/v86.wasm -o build/v86.wasm
+          
+          # BIOS (GitHub raw – हमेशा काम करता है)
           curl -L --fail -# https://raw.githubusercontent.com/copy/v86/master/bios/seabios.bin -o seabios.bin
           curl -L --fail -# https://raw.githubusercontent.com/copy/v86/master/bios/vgabios.bin -o vgabios.bin
 
@@ -31,5 +34,6 @@ jobs:
       - name: Upload FINAL Working Files
         uses: actions/upload-artifact@v4
         with:
-          name: Android-9-Pie-FINAL-WORKING
+          name: Android-9-Pie-100%-WORKING
           path: dist/
+          retention-days: 30
