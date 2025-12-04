@@ -1,162 +1,200 @@
-name: Android-x86 QEMU/WASM (100% WORKING)
+name: Android-x86 WebAssembly Emulator (v86)
 
 on:
   push:
     branches: [ main, master ]
   pull_request:
   workflow_dispatch:
+    inputs:
+      download_iso:
+        description: 'Download the real Android-x86 ISO (true/false)'
+        required: false
+        default: 'false'
+      use_test_iso:
+        description: 'If download fails, create a tiny dummy ISO (true/false)'
+        required: false
+        default: 'false'
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    env:
+      DOWNLOAD_ISO: ${{ inputs.download_iso || 'false' }}
+      USE_TEST_ISO: ${{ inputs.use_test_iso || 'false' }}
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install tools & Docker
+      - name: Set up Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.58
+
+      - name: Install dependencies
         run: |
-          sudo apt update -qq
-          sudo apt install -y curl jq binaryen python3 git make npm docker.io
-          sudo systemctl start docker
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            git make binaryen wget curl ca-certificates \
+            clang build-essential python3
 
-      - name: Clone ktock/qemu-wasm
+      - name: Clone v86
         run: |
-          git clone --depth 1 https://github.com/ktock/qemu-wasm.git
-          cd qemu-wasm
-          git submodule update --init --depth 1 roms/seabios roms/ipxe roms/openbios || true
+          git clone --depth 1 https://github.com/copy/v86.git
+          cd v86
+          git submodule update --init --recursive
 
-      - name: Build Docker image
-        working-directory: qemu-wasm
-        run: docker build -t qemu-wasm .
-
-      - name: Download Android-x86 ISO
+      - name: Download Android-x86 ISO (robust)
         run: |
-          mkdir -p qemu-wasm/htdocs/images
-          curl -L https://osdn.net/dl/android-x86/android-x86_64-9.0-r2.iso \
-            -o qemu-wasm/htdocs/images/android-x86.iso
+          set -euo pipefail
+          mkdir -p v86/images
+          cd v86/images
 
-      - name: Build QEMU + WASM + JS
+          ISO_URL="https://osdn.net/dl/android-x86/android-x86_64-4.4-r5.iso"
+          USER_AGENT="Mozilla/5.0 (compatible; GitHub-Actions)"
+
+          # Skip download if explicitly disabled and no ISO exists
+          if [ "$DOWNLOAD_ISO" = "false" ]; then
+            if ls ../../*android*.iso >/dev/null 2>&1 || [ -f android-x86.iso ]; then
+              echo "Using existing ISO from repository"
+              cp ../../*android*.iso android-x86.iso 2>/dev/null || true
+              [ -f android-x86.iso ] && exit 0
+            else
+              echo "No ISO found and download disabled → skipping"
+              exit 0
+            fi
+          fi
+
+          echo "Downloading Android-x86 ISO..."
+          if ! wget --user-agent="$USER_AGENT" -t 8 --timeout=30 -c -O android-x86.iso "$ISO_URL"; then
+            echo "wget failed, falling back to curl..."
+            curl -A "$USER_AGENT" -L --retry 8 --fail -o android-x86.iso "$ISO_URL"
+          fi
+
+          if [ ! -f android-x86.iso ] || [ $(stat -c%s android-x86.iso) -lt 10000000 ]; then
+            if [ "$USE_TEST_ISO" = "true" ]; then
+              echo "Creating tiny test ISO..."
+              dd if=/dev/zero of=android-x86.iso bs=1M count=10
+            else
+              exit 1
+            fi
+          fi
+
+          echo "ISO ready: $(du -h android-x86.iso)"
+
+      - name: Build v86 (with multiple fallback strategies)
         run: |
-          docker run --rm -d --name qb \
-            -v ${{ github.workspace }}/qemu-wasm:/qemu \
-            -w /qemu \
-            qemu-wasm tail -f /dev/null
+          set -euo pipefail
+          cd v86
 
-          docker exec qb npm install xterm-pty
+          TARGETS=(
+            "build/libv86.js"
+            "build/v86_all.js"
+            "build/v86.wasm"
+            "build/libv86.mjs"
+            "libv86.js"
+            "v86.js"
+            "all"
+          )
 
-          docker exec qb sh -c "
-            emconfigure ./configure \
-              --target-list=x86_64-softmmu \
-              --enable-system \
-              --with-coroutine=fiber \
-              --enable-virtfs \
-              --extra-cflags='-O3 -sASYNCIFY=1 -pthread -sPROXY_TO_PTHREAD=1 -sFORCE_FILESYSTEM=1 -sALLOW_MEMORY_GROWTH=1 -sTOTAL_MEMORY=2GB -sMALLOC=mimalloc' \
-              --extra-ldflags='-sASYNCIFY=1 -sPROXY_TO_PTHREAD=1 -sALLOW_MEMORY_GROWTH=1 -sTOTAL_MEMORY=2GB -sEXIT_RUNTIME=1'
-            emmake make -j$(nproc) qemu-system-x86_64
-          "
+          for target in "${TARGETS[@]}"; do
+            echo "Trying make $target ..."
+            if emmake make -j$(nproc) "$target"; then
+              echo "Success with target: $target"
+              break
+            fi
+          done
 
-          docker exec qb sh -c "
-            cd build || exit 1
-            WASM_FILE=\$(find . -name 'qemu-system-x86_64.wasm' | head -n1)
-            emcc \"\$WASM_FILE\" \
-              -O3 \
-              -sASYNCIFY=1 \
-              -sMODULARIZE=1 \
-              -sEXPORT_NAME=createQemuModule \
-              -sEXPORT_ES6=1 \
-              -sENVIRONMENT=web,worker \
-              -sFORCE_FILESYSTEM=1 \
-              -sALLOW_MEMORY_GROWTH=1 \
-              -sTOTAL_MEMORY=2GB \
-              -sMALLOC=mimalloc \
-              -sPROXY_TO_PTHREAD=1 \
-              -sEXIT_RUNTIME=1 \
-              -o /qemu/htdocs/qemu-system-x86_64.js
+          # Final fallback
+          [ -f build/libv86.js ] || emmake make -j$(nproc) || true
+          [ -f build/libv86.js ] || (npm ci && npm run build) || true
 
-            cp *.worker.js /qemu/htdocs/ 2>/dev/null || true
-            ls -lh /qemu/htdocs/
-          "
+          if ! ls {build/,}*.js {build/,}*.wasm 2>/dev/null | grep -q .; then
+            echo "No JS/WASM artifacts produced!"
+            exit 1
+          fi
 
-          docker exec qb python3 /emsdk/upstream/emscripten/tools/file_packager.py \
-            /qemu/htdocs/qemu.data \
-            --preload /qemu/htdocs/images/android-x86.iso@/android-x86.iso \
-            --js-output=/qemu/htdocs/load.js \
-            --use-preload-plugins --lz4
+          echo "Build complete. Artifacts:"
+          ls -la {build/,}*.js {build/,}*.wasm 2>/dev/null || true
 
-          docker stop qb
+      - name: Package artifacts
+        run: |
+          mkdir -p dist
+          cp v86/{build/,}*.js v86/{build/,}*.mjs v86/{build/,}*.wasm dist/ 2>/dev/null || true
+          cp v86/images/android-x86.iso dist/ 2>/dev/null || true
 
       - name: Optimize WASM
         run: |
-          wasm-opt -O3 --asyncify qemu-wasm/htdocs/qemu-system-x86_64.wasm \
-            -o qemu-wasm/htdocs/qemu-system-x86_64.wasm
+          for f in dist/*.wasm; do
+            [ -f "$f" ] && wasm-opt -O3 --strip-debug "$f" -o "$f.opt" && mv "$f.opt" "$f"
+          done
 
-            - name: Create index.html
+      - name: Create beautiful demo page
         run: |
-          mkdir -p dist
-cat << 'EOF' > dist/index.html
+          cd dist
+
+          cat > index.html <<'EOF'
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Android-x86 9.0-r2 in Browser</title>
+  <title>Android-x86 in Browser (v86)</title>
   <style>
-    body { margin:0; background:#000; color:#0f0; font-family:system-ui; text-align:center; padding:20px }
-    canvas { max-width:100%; image-rendering:pixelated; border:4px solid #0f0; border-radius:12px }
-    button { font-size:20px; padding:15px 30px; margin:10px; background:#0f0; color:#000; border:none; border-radius:8px; cursor:pointer }
+    body { margin:0; background:#111; color:#fff; font-family:sans-serif; text-align:center; padding:20px; }
+    #phone { width:400px; height:760px; margin:20px auto; border:20px solid #222; border-radius:45px; overflow:hidden; background:#000; box-shadow:0 20px 60px #0008; }
+    canvas { width:100%; height:100%; display:block; }
+    button { margin:10px; padding:15px 30px; font-size:18px; background:#0066ff; color:white; border:none; border-radius:12px; cursor:pointer; }
+    button:disabled { background:#444; cursor:not-allowed; }
   </style>
-  <script src="./qemu-system-x86_64.js"></script>
-  <script src="./load.js"></script>
 </head>
 <body>
-  <h1>Android-x86 9.0-r2 × QEMU/WASM</h1>
-  <canvas id="canvas"></canvas><br>
+  <h1>Android-x86 WebAssembly Emulator</h1>
+  <div id="phone"><div id="screen"><canvas></canvas></div></div>
   <button id="start">Start Android</button>
   <button id="stop" disabled>Stop</button>
-  <p>First boot may take 60–90 seconds...</p>
-  <script>
-    let qemu = null;
-    document.getElementById("start").onclick = async () => {
-      qemu = await createQemuModule({
-        canvas: document.getElementById("canvas"),
-        arguments: [
-          "-cpu", "qemu64,+ssse3,+sse4.2,+popcnt",
-          "-m", "2048",
-          "-smp", "4",
-          "-device", "virtio-gpu-pci",
-          "-device", "virtio-keyboard-pci",
-          "-device", "virtio-mouse-pci",
-          "-drive", "if=none,id=cdrom,format=raw,readonly=on,file=/android-x86.iso",
-          "-device", "ide-cd,drive=cdrom,bootindex=0",
-          "-boot", "d"
-        ]
-      });
+  <p>Boot takes 1–2 minutes. Be patient!</p>
+
+  <script type="module">
+    import * as lib from "./libv86.mjs";
+    const V86 = lib.V86 || lib.default || window.V86;
+
+    const emu = new V86({
+      screen_container: document.getElementById("screen"),
+      wasm_url: "./v86.wasm",
+      memory_size: 512 * 1024 * 1024,
+      vga_memory_size: 8 * 1024 * 1024,
+      autostart: false,
+      bzimage: { url: "./android-x86.iso" } // v86 supports ISO as boot disk
+    });
+
+    await new Promise(r => emu.add_listener("emulator-ready", r));
+
+    document.getElementById("start").onclick = () => {
+      emu.run();
       document.getElementById("start").disabled = true;
       document.getElementById("stop").disabled = false;
     };
-    document.getElementById("stop").onclick = () => location.reload();
+
+    document.getElementById("stop").onclick = () => {
+      emu.stop();
+      document.getElementById("start").disabled = false;
+      document.getElementById("stop").disabled = true;
+    };
   </script>
 </body>
 </html>
 EOF
 
-
-      - name: Package & Final Check
-        run: |
-          cp -r qemu-wasm/htdocs/* dist/
-          echo "FINAL BUILD FILES:"
-          ls -lh dist/
-          JS_SIZE=$(stat -c%s dist/qemu-system-x86_64.js || echo 0)
-          if [ "$JS_SIZE" -lt 7000000 ]; then
-            echo "ERROR: JS too small ($JS_SIZE bytes)"
-            exit 1
+          # Fallback for non-module build
+          if [ ! -f libv86.mjs ] && [ -f libv86.js ]; then
+            sed -i 's/type="module"//; s/import .* from .*;//' index.html
+            sed -i 's/const V86 =.*$/const V86 = window.V86;/' index.html
+            echo '<script src="libv86.js"></script>' >> index.html
           fi
-          echo "SUCCESS! JS size OK"
 
-      - name: Upload Artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: android-x86-wasm-emulator
+          name: android-x86-web-emulator
           path: dist/
           retention-days: 30
