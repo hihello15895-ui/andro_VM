@@ -11,12 +11,12 @@ jobs:
     timeout-minutes: 180
 
     steps:
-      # 1. Checkout repository
-      - name: Checkout code
+      # 1. Checkout this workflow repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Install dependencies
-      - name: Install build tools
+      # 2. Install build dependencies
+      - name: Install dependencies
         run: |
           sudo apt update
           sudo apt install -y git cmake ninja-build python3 python3-pip nodejs npm build-essential pkg-config libglib2.0-dev zlib1g-dev
@@ -30,10 +30,12 @@ jobs:
           ./emsdk activate latest
           source ./emsdk_env.sh
 
-      # 4. Clone public QEMU-WASM fork
+      # 4. Clone QEMU-WASM fork using token
       - name: Clone QEMU-WASM fork
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git clone --recursive https://github.com/ahmedelgabri/qemu-wasm.git
+          git clone https://x-access-token:${GITHUB_TOKEN}@github.com/ahmedelgabri/qemu-wasm.git
           cd qemu-wasm
 
       # 5. Build QEMU-WASM
